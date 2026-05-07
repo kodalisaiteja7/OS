@@ -1,0 +1,308 @@
+Imports System
+Imports System.Data
+Imports System.Data.Common
+Imports System.IO
+Imports System.Collections.Generic
+Imports System.Globalization
+Imports System.Linq
+Imports Microsoft.VisualBasic
+Imports System.Windows.Forms
+Imports OneStream.Shared.Common
+Imports OneStream.Shared.Wcf
+Imports OneStream.Shared.Engine
+Imports OneStream.Shared.Database
+Imports OneStream.Stage.Engine
+Imports OneStream.Stage.Database
+Imports OneStream.Finance.Engine
+Imports OneStream.Finance.Database
+
+Namespace OneStream.BusinessRule.DashboardStringFunction.ROA_XFBR
+
+    Public Class MainClass
+
+        '======================================================================
+        ' Dashboard XFBR String Business Rule: ROA Calculation
+        ' Purpose : Calculates ROA = B + D using the CubeView POV
+        ' Called  : From a CubeView member formula via:
+        '           =XFBR(ROA_XFBR, GetROA, Entity=|Entity|, Cons=|Cons|,
+        '                 Scenario=|Scenario|, Time=|Time|,
+        '                 UD1=|UD1|, UD2=|UD2|, UD3=|UD3|, UD4=|UD4|,
+        '                 UD5=|UD5|, UD6=|UD6|, UD7=|UD7|, UD8=|UD8|)
+        ' Returns : ROA value as a string (CubeView converts to numeric)
+        '======================================================================
+
+        Public Function Main(ByVal si As SessionInfo, _
+                             ByVal globals As BRGlobals, _
+                             ByVal args As DashboardStringFunctionArgs) As Object
+            Try
+
+                Select Case args.FunctionName.ToUpper()
+
+                    '--------------------------------------------------------------
+                    ' Function: GetROA
+                    '--------------------------------------------------------------
+                    Case "GETROA"
+                        Return CalculateROA(si, args)
+
+                End Select
+
+                Return String.Empty
+
+            Catch ex As Exception
+                Throw ErrorHandler.LogWrite(si, New XFException(si, ex))
+            End Try
+        End Function
+
+        '======================================================================
+        ' Main ROA calculation
+        '======================================================================
+        Private Function CalculateROA(ByVal si As SessionInfo, _
+                                      ByVal args As DashboardStringFunctionArgs) As String
+            Try
+
+                '----------------------------------------------------------
+                ' Read POV tokens passed from CubeView
+                '----------------------------------------------------------
+                Dim cube     As String = GetArg(args, "Cube")
+                Dim entity   As String = GetArg(args, "Entity")
+                Dim cons     As String = GetArg(args, "Cons")
+                Dim scenario As String = GetArg(args, "Scenario")
+                Dim time     As String = GetArg(args, "Time")
+                Dim ud1      As String = GetArg(args, "UD1")
+                Dim ud2      As String = GetArg(args, "UD2")
+                Dim ud3      As String = GetArg(args, "UD3")
+                Dim ud4      As String = GetArg(args, "UD4")
+                Dim ud5      As String = GetArg(args, "UD5")
+                Dim ud6      As String = GetArg(args, "UD6")
+                Dim ud7      As String = GetArg(args, "UD7")
+                Dim ud8      As String = GetArg(args, "UD8")
+
+                '----------------------------------------------------------
+                ' Hardcoded business days (update later when stored in accounts)
+                '----------------------------------------------------------
+                Dim dblYTDBusinessDays         As Decimal = 104D     ' YTD business days
+                Dim dblMTDBusinessDays         As Decimal = 21D      ' Current month business days
+                Dim dblTotalAnnualBusinessDays As Decimal = 261D     ' Total annual business days
+                Dim dblM12PrevYearBusinessDays As Decimal = 21D      ' M12 (December) of previous year
+                Dim dblM11YTDBusinessDays      As Decimal = 231D     ' M11 YTD business days (Jan-Nov)
+
+                '----------------------------------------------------------
+                ' Derive current month and year from Time member name
+                '----------------------------------------------------------
+                Dim currentMonth As Integer = GetMonthFromTimeName(time)
+                Dim currentYear  As Integer = GetYearFromTimeName(time)
+
+                If currentMonth <= 0 Then
+                    BRApi.ErrorLog.LogMessage(si, _
+                        "ROA Rule: Could not derive month from Time member " & time)
+                    Return "0"
+                End If
+
+                '----------------------------------------------------------
+                ' Build the common POV string used in data buffer queries
+                ' (Account is replaced per-call in GetAccountValue)
+                '----------------------------------------------------------
+                Dim sBasePov As String = _
+                      "C#"  & cons & _
+                    ":E#"   & entity & _
+                    ":S#"   & scenario & _
+                    ":U1#"  & ud1 & _
+                    ":U2#"  & ud2 & _
+                    ":U3#"  & ud3 & _
+                    ":U4#"  & ud4 & _
+                    ":U5#"  & ud5 & _
+                    ":U6#"  & ud6 & _
+                    ":U7#"  & ud7 & _
+                    ":U8#"  & ud8
+
+                '----------------------------------------------------------
+                ' Build YTD IR_AUM_AMT (sum of M1 through current month)
+                '----------------------------------------------------------
+                Dim dblYTDAUM As Decimal = 0D
+                For m As Integer = 1 To currentMonth
+                    Dim sMonthTime As String = currentYear.ToString() & "M" & m.ToString()
+                    Dim aumVal As Decimal = GetAccountValue(si, cube, sBasePov, "IR_AUM_AMT", sMonthTime)
+                    dblYTDAUM += aumVal
+                Next
+
+                '----------------------------------------------------------
+                ' Calculate average monthly AUM (denominator for A and C)
+                '----------------------------------------------------------
+                Dim dblAvgMonthlyAUM As Decimal = dblYTDAUM / currentMonth
+
+                If dblAvgMonthlyAUM = 0D Then
+                    BRApi.ErrorLog.LogMessage(si, _
+                        "ROA Rule: Average Monthly AUM is zero, cannot calculate ROA.")
+                    Return "0"
+                End If
+
+                '----------------------------------------------------------
+                ' Pull account values at current Time
+                '----------------------------------------------------------
+                Dim dblRevenueMtM     As Decimal = GetAccountValue(si, cube, sBasePov, "Revenue_MtM",          time)
+                Dim dblCreditsFeesMtM As Decimal = GetAccountValue(si, cube, sBasePov, "Credits_and_Fees_MtM", time)
+                Dim dbl454276         As Decimal = GetAccountValue(si, cube, sBasePov, "454276",               time)
+                Dim dbl454278         As Decimal = GetAccountValue(si, cube, sBasePov, "454278",               time)
+                Dim dbl454279         As Decimal = GetAccountValue(si, cube, sBasePov, "454279",               time)
+                Dim dbl454284         As Decimal = GetAccountValue(si, cube, sBasePov, "454284",               time)
+                Dim dbl454285         As Decimal = GetAccountValue(si, cube, sBasePov, "454285",               time)
+
+                Dim dblSumAccounts As Decimal = dbl454276 + dbl454278 + dbl454279 + dbl454284 + dbl454285
+
+                '----------------------------------------------------------
+                ' Apply absolute value to Credits_and_Fees_MtM
+                ' (if negative, change sign; otherwise add normally)
+                '----------------------------------------------------------
+                Dim dblCreditsFeesAbs As Decimal = Math.Abs(dblCreditsFeesMtM)
+
+                '----------------------------------------------------------
+                ' STEP 1: Calculate A
+                ' A = (Revenue_MtM + |Credits_and_Fees_MtM| - SumAccounts) / AvgMonthlyAUM
+                '----------------------------------------------------------
+                Dim dblNumeratorA As Decimal = dblRevenueMtM + dblCreditsFeesAbs - dblSumAccounts
+                Dim dblA          As Decimal = dblNumeratorA / dblAvgMonthlyAUM
+
+                '----------------------------------------------------------
+                ' STEP 2: Calculate B
+                ' B = A / (YTD Business Days / Total Annual Business Days)
+                '----------------------------------------------------------
+                Dim dblB As Decimal = 0D
+                If dblTotalAnnualBusinessDays <> 0D Then
+                    Dim dblRatio2 As Decimal = dblYTDBusinessDays / dblTotalAnnualBusinessDays
+                    If dblRatio2 <> 0D Then
+                        dblB = dblA / dblRatio2
+                    End If
+                End If
+
+                '----------------------------------------------------------
+                ' STEP 3: Calculate C
+                ' C = SumAccounts / AvgMonthlyAUM
+                '----------------------------------------------------------
+                Dim dblC As Decimal = dblSumAccounts / dblAvgMonthlyAUM
+
+                '----------------------------------------------------------
+                ' STEP 4: Calculate D
+                ' D = C / ((YTD BD - MTD BD + M12 PrevYr BD) / (M11 YTD BD + M12 PrevYr BD))
+                '----------------------------------------------------------
+                Dim dblD            As Decimal = 0D
+                Dim dblNumRatio4    As Decimal = dblYTDBusinessDays - dblMTDBusinessDays + dblM12PrevYearBusinessDays
+                Dim dblDenomRatio4  As Decimal = dblM11YTDBusinessDays + dblM12PrevYearBusinessDays
+                If dblDenomRatio4 <> 0D Then
+                    Dim dblRatio4 As Decimal = dblNumRatio4 / dblDenomRatio4
+                    If dblRatio4 <> 0D Then
+                        dblD = dblC / dblRatio4
+                    End If
+                End If
+
+                '----------------------------------------------------------
+                ' STEP 5: Final ROA = B + D
+                '----------------------------------------------------------
+                Dim dblROA As Decimal = dblB + dblD
+
+                Return dblROA.ToString(CultureInfo.InvariantCulture)
+
+            Catch ex As Exception
+                Throw ErrorHandler.LogWrite(si, New XFException(si, ex))
+            End Try
+        End Function
+
+        '======================================================================
+        ' Helper: Read a named argument from the XFBR call
+        ' args.NameValuePairs is a Dictionary(Of String, String)
+        '======================================================================
+        Private Function GetArg(ByVal args As DashboardStringFunctionArgs, _
+                                ByVal name As String) As String
+            Try
+                If args.NameValuePairs Is Nothing Then Return String.Empty
+
+                For Each kvp As KeyValuePair(Of String, String) In args.NameValuePairs
+                    If kvp.Key.Equals(name, StringComparison.OrdinalIgnoreCase) Then
+                        If kvp.Value Is Nothing Then
+                            Return String.Empty
+                        Else
+                            Return kvp.Value
+                        End If
+                    End If
+                Next
+
+                Return String.Empty
+            Catch ex As Exception
+                Return String.Empty
+            End Try
+        End Function
+
+        '======================================================================
+        ' Helper: Pull an account value at a specific Time using BRApi
+        ' Uses GetDataCellUsingMemberScript which is the correct method
+        ' in OneStream 8.x for retrieving a data cell from a Dashboard XFBR
+        '======================================================================
+        Private Function GetAccountValue(ByVal si As SessionInfo, _
+                                         ByVal cubeName As String, _
+                                         ByVal sBasePov As String, _
+                                         ByVal accountName As String, _
+                                         ByVal timeName As String) As Decimal
+            Try
+                ' Build the full POV expression (no Cb# prefix - cube is passed separately)
+                Dim sScriptMethod As String = "A#" & accountName & ":T#" & timeName & ":" & sBasePov
+
+                ' Get the data cell info
+                Dim oCellInfo As DataCellInfoUsingMemberScript = _
+                    BRApi.Finance.Data.GetDataCellUsingMemberScript(si, cubeName, sScriptMethod)
+
+                If oCellInfo Is Nothing Then Return 0D
+                If oCellInfo.DataCellEx Is Nothing Then Return 0D
+                If oCellInfo.DataCellEx.DataCell Is Nothing Then Return 0D
+
+                Return Convert.ToDecimal(oCellInfo.DataCellEx.DataCell.CellAmount)
+            Catch ex As Exception
+                Return 0D
+            End Try
+        End Function
+
+        '======================================================================
+        ' Helper: Extract month number from Time member name (e.g. "2025M5" -> 5)
+        '======================================================================
+        Private Function GetMonthFromTimeName(ByVal timeName As String) As Integer
+            Try
+                If String.IsNullOrEmpty(timeName) Then Return 0
+
+                Dim idx As Integer = timeName.ToUpper().IndexOf("M"c)
+                If idx < 0 Then Return 0
+
+                Dim sMonth As String = timeName.Substring(idx + 1)
+                Dim iMonth As Integer = 0
+                If Integer.TryParse(sMonth, iMonth) Then
+                    Return iMonth
+                End If
+
+                Return 0
+            Catch ex As Exception
+                Return 0
+            End Try
+        End Function
+
+        '======================================================================
+        ' Helper: Extract year from Time member name (e.g. "2025M5" -> 2025)
+        '======================================================================
+        Private Function GetYearFromTimeName(ByVal timeName As String) As Integer
+            Try
+                If String.IsNullOrEmpty(timeName) Then Return 0
+
+                Dim idx As Integer = timeName.ToUpper().IndexOf("M"c)
+                If idx < 0 Then Return 0
+
+                Dim sYear As String = timeName.Substring(0, idx)
+                Dim iYear As Integer = 0
+                If Integer.TryParse(sYear, iYear) Then
+                    Return iYear
+                End If
+
+                Return 0
+            Catch ex As Exception
+                Return 0
+            End Try
+        End Function
+
+    End Class
+
+End Namespace
