@@ -1,0 +1,212 @@
+Imports System
+Imports System.Data
+Imports System.Data.Common
+Imports System.IO
+Imports System.Collections.Generic
+Imports System.Globalization
+Imports System.Linq
+Imports Microsoft.VisualBasic
+Imports System.Windows.Forms
+Imports OneStream.Shared.Common
+Imports OneStream.Shared.Wcf
+Imports OneStream.Shared.Engine
+Imports OneStream.Shared.Database
+Imports OneStream.Stage.Engine
+Imports OneStream.Stage.Database
+Imports OneStream.Finance.Engine
+Imports OneStream.Finance.Database
+
+Namespace OneStream.BusinessRule.Finance.ROA_Finance
+
+    Public Class MainClass
+
+        '======================================================================
+        ' Finance Business Rule: ROA Calculation
+        '
+        ' Purpose : Calculates ROA = B + D as a custom GetDataCell function
+        '           that can be referenced from a CubeView row/column.
+        '
+        ' How to use in a CubeView:
+        '   On the calculated row/column, use the Member Filter:
+        '
+        '     GetDataCell(BR#[ROA_Finance, GetROA]):Name("ROA")
+        '
+        '   The rule will execute at the current CubeView POV automatically.
+        '======================================================================
+
+        Public Function Main(ByVal si As SessionInfo, _
+                             ByVal globals As BRGlobals, _
+                             ByVal api As FinanceRulesApi, _
+                             ByVal args As FinanceRulesArgs) As Object
+            Try
+
+                Select Case api.FunctionType
+
+                    '------------------------------------------------------------------
+                    ' DataCell function type - returns a single cell value to a
+                    ' GetDataCell expression in a CubeView Member Filter
+                    '------------------------------------------------------------------
+                    Case Is = FinanceFunctionType.DataCell
+
+                        If args.DataCellArgs.FunctionName.XFEqualsIgnoreCase("GetROA") Then
+                            Return CalculateROA(si, api, args)
+                        End If
+
+                End Select
+
+                Return Nothing
+
+            Catch ex As Exception
+                Throw ErrorHandler.LogWrite(si, New XFException(si, ex))
+            End Try
+        End Function
+
+        '======================================================================
+        ' Performs the full ROA calculation and returns a DataCell
+        '======================================================================
+        Private Function CalculateROA(ByVal si As SessionInfo, _
+                                      ByVal api As FinanceRulesApi, _
+                                      ByVal args As FinanceRulesArgs) As DataCell
+            Try
+
+                '------------------------------------------------------------------
+                ' Hardcoded business days (update later when stored in accounts)
+                '------------------------------------------------------------------
+                Dim dblYTDBusinessDays         As Decimal = 104D     ' YTD business days
+                Dim dblMTDBusinessDays         As Decimal = 21D      ' Current month business days
+                Dim dblTotalAnnualBusinessDays As Decimal = 261D     ' Total annual business days
+                Dim dblM12PrevYearBusinessDays As Decimal = 21D      ' M12 (December) of previous year
+                Dim dblM11YTDBusinessDays      As Decimal = 231D     ' M11 YTD business days (Jan-Nov)
+
+                '------------------------------------------------------------------
+                ' Get current POV Time info
+                '------------------------------------------------------------------
+                Dim povTimeId    As Integer = api.Pov.Time.MemberId
+                Dim currentYear  As Integer = api.Time.GetYearFromId(povTimeId)
+                Dim currentMonth As Integer = api.Time.GetPeriodNumFromId(povTimeId)
+
+                If currentMonth <= 0 Then
+                    BRApi.ErrorLog.LogMessage(si, "ROA Rule: Could not derive current month from POV.")
+                    Return api.Data.CreateDataCellObject(0D, False, False)
+                End If
+
+                '------------------------------------------------------------------
+                ' Build YTD IR_AUM_AMT (sum of M1 through current month)
+                '------------------------------------------------------------------
+                Dim dblYTDAUM As Decimal = 0D
+                For m As Integer = 1 To currentMonth
+                    Dim sMonthTime As String = currentYear.ToString() & "M" & m.ToString()
+                    Dim sScript    As String = "A#IR_AUM_AMT:T#" & sMonthTime
+                    Dim oCell      As DataCell = api.Data.GetDataCell(sScript)
+
+                    If oCell IsNot Nothing AndAlso (Not oCell.CellStatus.IsNoData) Then
+                        dblYTDAUM += oCell.CellAmount
+                    End If
+                Next
+
+                '------------------------------------------------------------------
+                ' Average monthly AUM (denominator for A and C)
+                '------------------------------------------------------------------
+                Dim dblAvgMonthlyAUM As Decimal = dblYTDAUM / currentMonth
+
+                If dblAvgMonthlyAUM = 0D Then
+                    BRApi.ErrorLog.LogMessage(si, "ROA Rule: Average Monthly AUM is zero, returning NoData.")
+                    Return api.Data.CreateDataCellObject(0D, False, True)
+                End If
+
+                '------------------------------------------------------------------
+                ' Pull account values at current POV (current Time)
+                '------------------------------------------------------------------
+                Dim dblRevenueMtM     As Decimal = GetCellAmount(api, "A#Revenue_MtM")
+                Dim dblCreditsFeesMtM As Decimal = GetCellAmount(api, "A#Credits_and_Fees_MtM")
+                Dim dbl454276         As Decimal = GetCellAmount(api, "A#454276")
+                Dim dbl454278         As Decimal = GetCellAmount(api, "A#454278")
+                Dim dbl454279         As Decimal = GetCellAmount(api, "A#454279")
+                Dim dbl454284         As Decimal = GetCellAmount(api, "A#454284")
+                Dim dbl454285         As Decimal = GetCellAmount(api, "A#454285")
+
+                Dim dblSumAccounts As Decimal = dbl454276 + dbl454278 + dbl454279 + dbl454284 + dbl454285
+
+                '------------------------------------------------------------------
+                ' Apply absolute value to Credits_and_Fees_MtM
+                ' (if negative, change sign; otherwise add normally)
+                '------------------------------------------------------------------
+                Dim dblCreditsFeesAbs As Decimal = Math.Abs(dblCreditsFeesMtM)
+
+                '------------------------------------------------------------------
+                ' STEP 1: Calculate A
+                ' A = (Revenue_MtM + |Credits_and_Fees_MtM| - SumAccounts) / AvgMonthlyAUM
+                '------------------------------------------------------------------
+                Dim dblNumeratorA As Decimal = dblRevenueMtM + dblCreditsFeesAbs - dblSumAccounts
+                Dim dblA          As Decimal = dblNumeratorA / dblAvgMonthlyAUM
+
+                '------------------------------------------------------------------
+                ' STEP 2: Calculate B
+                ' B = A / (YTD Business Days / Total Annual Business Days)
+                '------------------------------------------------------------------
+                Dim dblB As Decimal = 0D
+                If dblTotalAnnualBusinessDays <> 0D Then
+                    Dim dblRatio2 As Decimal = dblYTDBusinessDays / dblTotalAnnualBusinessDays
+                    If dblRatio2 <> 0D Then
+                        dblB = dblA / dblRatio2
+                    End If
+                End If
+
+                '------------------------------------------------------------------
+                ' STEP 3: Calculate C
+                ' C = SumAccounts / AvgMonthlyAUM
+                '------------------------------------------------------------------
+                Dim dblC As Decimal = dblSumAccounts / dblAvgMonthlyAUM
+
+                '------------------------------------------------------------------
+                ' STEP 4: Calculate D
+                ' D = C / ((YTD BD - MTD BD + M12 PrevYr BD) / (M11 YTD BD + M12 PrevYr BD))
+                '------------------------------------------------------------------
+                Dim dblD            As Decimal = 0D
+                Dim dblNumRatio4    As Decimal = dblYTDBusinessDays - dblMTDBusinessDays + dblM12PrevYearBusinessDays
+                Dim dblDenomRatio4  As Decimal = dblM11YTDBusinessDays + dblM12PrevYearBusinessDays
+                If dblDenomRatio4 <> 0D Then
+                    Dim dblRatio4 As Decimal = dblNumRatio4 / dblDenomRatio4
+                    If dblRatio4 <> 0D Then
+                        dblD = dblC / dblRatio4
+                    End If
+                End If
+
+                '------------------------------------------------------------------
+                ' STEP 5: Final ROA = B + D
+                '------------------------------------------------------------------
+                Dim dblROA As Decimal = dblB + dblD
+
+                '------------------------------------------------------------------
+                ' Return as a DataCell
+                '   CreateDataCellObject(amount, isAnnotation, isNoData)
+                '------------------------------------------------------------------
+                Return api.Data.CreateDataCellObject(dblROA, False, False)
+
+            Catch ex As Exception
+                Throw ErrorHandler.LogWrite(si, New XFException(si, ex))
+            End Try
+        End Function
+
+        '======================================================================
+        ' Helper: Pull an account amount at the current POV using a member script
+        ' The script can be a partial expression like "A#Revenue_MtM" - all
+        ' unspecified dimensions inherit from the current POV automatically
+        '======================================================================
+        Private Function GetCellAmount(ByVal api As FinanceRulesApi, _
+                                       ByVal memberScript As String) As Decimal
+            Try
+                Dim oCell As DataCell = api.Data.GetDataCell(memberScript)
+
+                If oCell Is Nothing Then Return 0D
+                If oCell.CellStatus.IsNoData Then Return 0D
+
+                Return oCell.CellAmount
+            Catch ex As Exception
+                Return 0D
+            End Try
+        End Function
+
+    End Class
+
+End Namespace
