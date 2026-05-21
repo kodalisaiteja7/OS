@@ -1,0 +1,382 @@
+Imports System
+Imports System.Data
+Imports System.Data.Common
+Imports System.IO
+Imports System.Collections.Generic
+Imports System.Globalization
+Imports System.Linq
+Imports Microsoft.VisualBasic
+Imports System.Windows.Forms
+Imports OneStream.Shared.Common
+Imports OneStream.Shared.Wcf
+Imports OneStream.Shared.Engine
+Imports OneStream.Shared.Database
+Imports OneStream.Stage.Engine
+Imports OneStream.Stage.Database
+Imports OneStream.Finance.Engine
+Imports OneStream.Finance.Database
+
+Namespace OneStream.BusinessRule.Finance.ROA_Calc
+
+	Public Class MainClass
+
+		'==================================================================
+		' Finance Business Rule: ROA Calculation
+		'
+		' Purpose : Calculates ROA = B + D as a custom GetDataCell function
+		'           that can be referenced from a CubeView row/column.
+		'
+		'   Step 1: A = Numerator / AvgMonthlyAUM
+		'           - GetROA    -> Revenue_MtM + |Credits and Fees_MtM| - sum(advisory)
+		'           - GetROA_MM -> Revenues_MM - sum(advisory)
+		'   Step 2: B = A / (YTD BD / Total Annual BD)
+		'   Step 3: C = sum(advisory) / AvgMonthlyAUM
+		'   Step 4: D = C / ((YTD BD - MTD BD + M12 PrevYr BD) /
+		'                    (M11 YTD BD + M12 PrevYr BD))
+		'   Step 5: ROA = B + D
+		'
+		' Business days are sourced from account A#990050 using the
+		' Assumption-driver POV (see BD_* constants below).
+		'==================================================================
+
+		' --- ROA account / view constants -------------------------------
+		Private Const VIEW_YTD              As String = "V#YTD"
+		Private Const ACCT_REVENUE_MTM      As String = "Revenue_MtM"
+		Private Const ACCT_CREDITS_FEES_MTM As String = "[Credits and Fees_MtM]"
+		Private Const ACCT_REVENUE_MM       As String = "Revenues_MM"
+		Private Const ACCT_AUM              As String = "IR_AUM_AMT"
+
+		' --- Advisory account list (used by both ROA variants) -----------
+		Private Shared ReadOnly ADVISORY_ACCOUNTS As String() = _
+			{"454276", "454278", "454279", "454284", "454285"}
+
+		' --- Business Days lookup POV constants -------------------------
+		Private Const BD_ACCOUNT  As String = "990050"
+		Private Const BD_CUBE     As String = "MarketManagement"
+		Private Const BD_ENTITY   As String = "No_Region"
+		Private Const BD_CONS     As String = "USD"
+		Private Const BD_SCENARIO As String = "Assumption"
+		Private Const BD_VIEW     As String = "Periodic"
+		Private Const BD_FLOW     As String = "Adjustments"
+		Private Const BD_ORIGIN   As String = "Forms"
+		Private Const BD_IC       As String = "None"
+		Private Const BD_UD1      As String = "Total No Department"
+		Private Const BD_UD2      As String = "None"
+		Private Const BD_UD3      As String = "None"
+		Private Const BD_UD4      As String = "Top"
+		Private Const BD_UD5      As String = "None"
+		Private Const BD_UD6      As String = "None"
+		Private Const BD_UD7      As String = "None"
+		Private Const BD_UD8      As String = "None"
+
+		' --- Delegate for the numerator strategy ------------------------
+		' Each ROA variant supplies its own numerator builder. The
+		' delegate receives the api and the pre-computed sum of advisory
+		' accounts (since both variants need it) and returns the Step-1
+		' numerator value.
+		Private Delegate Function NumeratorBuilder(ByVal api As FinanceRulesApi, _
+												   ByVal advisorySum As Decimal) As Decimal
+
+
+		'==================================================================
+		' Entry point - dispatch on FunctionName.
+		'==================================================================
+		Public Function Main(ByVal si As SessionInfo, _
+							 ByVal globals As BRGlobals, _
+							 ByVal api As FinanceRulesApi, _
+							 ByVal args As FinanceRulesArgs) As Object
+			Try
+
+				If api.FunctionType <> FinanceFunctionType.DataCell Then
+					Return Nothing
+				End If
+
+				Dim sFunc As String = args.DataCellArgs.FunctionName
+
+				Select Case True
+					Case sFunc.XFEqualsIgnoreCase("GetROA")
+						Return CalculateROA(si, api, "ROA", AddressOf BuildNumerator_Standard)
+
+					Case sFunc.XFEqualsIgnoreCase("GetROA_MM")
+						Return CalculateROA(si, api, "ROA_MM", AddressOf BuildNumerator_MM)
+				End Select
+
+				Return Nothing
+
+			Catch ex As Exception
+				Throw ErrorHandler.LogWrite(si, New XFException(si, ex))
+			End Try
+		End Function
+
+
+		'==================================================================
+		' Orchestrates the 5-step ROA calculation. The numerator builder
+		' is the only piece that varies between variants.
+		'==================================================================
+		Private Function CalculateROA(ByVal si As SessionInfo, _
+									  ByVal api As FinanceRulesApi, _
+									  ByVal label As String, _
+									  ByVal getNumerator As NumeratorBuilder) As DataCell
+			Try
+
+				' --- Resolve POV time ------------------------------------
+				Dim povTimeId    As Integer = api.Pov.Time.MemberId
+				Dim currentYear  As Integer = api.Time.GetYearFromId(povTimeId)
+				Dim currentMonth As Integer = api.Time.GetPeriodNumFromId(povTimeId)
+
+				If currentMonth <= 0 Then
+					BRApi.ErrorLog.LogMessage(si, label & " Rule: Could not derive current month from POV.")
+					Return api.Data.CreateDataCellObject(0D, False, False)
+				End If
+
+				LogValue(si, label, "Current Month", currentMonth)
+
+				' --- Business Days ---------------------------------------
+				Dim bdCtx As BusinessDayContext = BuildBusinessDayContext(api, currentYear, currentMonth)
+				LogBusinessDayContext(si, label, bdCtx)
+
+				' --- Average Monthly AUM ---------------------------------
+				Dim dblAvgMonthlyAUM As Decimal = CalculateAvgMonthlyAUM(api, currentMonth)
+				LogValue(si, label, "Average AUM", dblAvgMonthlyAUM)
+
+				If dblAvgMonthlyAUM = 0D Then
+					BRApi.ErrorLog.LogMessage(si, label & " Rule: Average Monthly AUM is zero, returning NoData.")
+					Return api.Data.CreateDataCellObject(0D, False, True)
+				End If
+
+				' --- Step 1: A -------------------------------------------
+				Dim dblAdvisorySum As Decimal = SumAdvisoryAccounts(api)
+				LogValue(si, label, "Sum of advisory accounts", dblAdvisorySum)
+
+				Dim dblNumerator As Decimal = getNumerator(api, dblAdvisorySum)
+				LogValue(si, label, "Numerator", dblNumerator)
+
+				Dim dblA As Decimal = CalculateA(dblNumerator, dblAvgMonthlyAUM)
+				LogValue(si, label, "A", dblA)
+
+				' --- Step 2: B -------------------------------------------
+				Dim dblB As Decimal = CalculateB(dblA, bdCtx)
+				LogValue(si, label, "B", dblB)
+
+				' --- Step 3: C -------------------------------------------
+				Dim dblC As Decimal = CalculateC(dblAdvisorySum, dblAvgMonthlyAUM)
+				LogValue(si, label, "C", dblC)
+
+				' --- Step 4: D -------------------------------------------
+				Dim dblD As Decimal = CalculateD(dblC, bdCtx)
+				LogValue(si, label, "D", dblD)
+
+				' --- Step 5: ROA = B + D ---------------------------------
+				Dim dblROA As Decimal = dblB + dblD
+				LogValue(si, label, "ROA", dblROA)
+
+				Return api.Data.CreateDataCellObject(dblROA, False, False)
+
+			Catch ex As Exception
+				Throw ErrorHandler.LogWrite(si, New XFException(si, ex))
+			End Try
+		End Function
+
+
+		'==================================================================
+		' Numerator builders - one per ROA variant.
+		'==================================================================
+		Private Function BuildNumerator_Standard(ByVal api As FinanceRulesApi, _
+												  ByVal advisorySum As Decimal) As Decimal
+			Dim dblRevenueMtM     As Decimal = GetCellAmount(api, "A#" & ACCT_REVENUE_MTM      & ":" & VIEW_YTD)
+			Dim dblCreditsFeesMtM As Decimal = GetCellAmount(api, "A#" & ACCT_CREDITS_FEES_MTM & ":" & VIEW_YTD)
+			Return dblRevenueMtM + Math.Abs(dblCreditsFeesMtM) - advisorySum
+		End Function
+
+		Private Function BuildNumerator_MM(ByVal api As FinanceRulesApi, _
+											ByVal advisorySum As Decimal) As Decimal
+			Dim dblRevenueMM As Decimal = GetCellAmount(api, "A#" & ACCT_REVENUE_MM & ":" & VIEW_YTD)
+			Return dblRevenueMM - advisorySum
+		End Function
+
+
+		'==================================================================
+		' Individual step calculations - small, focused, and testable.
+		'==================================================================
+		Private Function CalculateAvgMonthlyAUM(ByVal api As FinanceRulesApi, _
+												 ByVal currentMonth As Integer) As Decimal
+			Dim dblYTDAUM As Decimal = GetCellAmount(api, "A#" & ACCT_AUM & ":" & VIEW_YTD)
+			Return dblYTDAUM / currentMonth
+		End Function
+
+		Private Function CalculateA(ByVal numerator As Decimal, _
+									 ByVal avgMonthlyAUM As Decimal) As Decimal
+			Return SafeDivide(numerator, avgMonthlyAUM)
+		End Function
+
+		Private Function CalculateB(ByVal a As Decimal, _
+									 ByVal bdCtx As BusinessDayContext) As Decimal
+			Dim dblRatio As Decimal = SafeDivide(bdCtx.YTDBusinessDays, bdCtx.TotalAnnualBD)
+			Return SafeDivide(a, dblRatio)
+		End Function
+
+		Private Function CalculateC(ByVal advisorySum As Decimal, _
+									 ByVal avgMonthlyAUM As Decimal) As Decimal
+			Return SafeDivide(advisorySum, avgMonthlyAUM)
+		End Function
+
+		Private Function CalculateD(ByVal c As Decimal, _
+									 ByVal bdCtx As BusinessDayContext) As Decimal
+			Dim dblNum   As Decimal = bdCtx.YTDBusinessDays - bdCtx.MTDBusinessDays + bdCtx.M12PrevYearBD
+			Dim dblDenom As Decimal = bdCtx.M11YTDBusinessDays + bdCtx.M12PrevYearBD
+			Dim dblRatio As Decimal = SafeDivide(dblNum, dblDenom)
+			Return SafeDivide(c, dblRatio)
+		End Function
+
+
+		'==================================================================
+		' Business Day Context
+		'==================================================================
+		Private Class BusinessDayContext
+			Public Property TotalAnnualBD      As Decimal
+			Public Property YTDBusinessDays    As Decimal
+			Public Property MTDBusinessDays    As Decimal
+			Public Property M11YTDBusinessDays As Decimal
+			Public Property M12PrevYearBD      As Decimal
+		End Class
+
+		'==================================================================
+		' Build Business Day Context by pulling A#990050 from each month.
+		' Pulls current year (M1..M12), plus previous year M12.
+		'==================================================================
+		Private Function BuildBusinessDayContext(ByVal api As FinanceRulesApi, _
+												  ByVal currentYear As Integer, _
+												  ByVal currentMonth As Integer) As BusinessDayContext
+
+			Dim ctx As New BusinessDayContext()
+
+			' Pull all 12 months of the current year
+			Dim monthlyBD(11) As Decimal
+			For m As Integer = 1 To 12
+				monthlyBD(m - 1) = GetBusinessDaysForMonth(api, currentYear, m)
+			Next
+
+			' Total annual = sum of all 12 months
+			For i As Integer = 0 To 11
+				ctx.TotalAnnualBD += monthlyBD(i)
+			Next
+
+			' YTD = M1..currentMonth
+			For i As Integer = 0 To (currentMonth - 1)
+				ctx.YTDBusinessDays += monthlyBD(i)
+			Next
+
+			' MTD = current month only
+			ctx.MTDBusinessDays = monthlyBD(currentMonth - 1)
+
+			' M11 YTD = M1..M11
+			For i As Integer = 0 To 10
+				ctx.M11YTDBusinessDays += monthlyBD(i)
+			Next
+
+			' M12 of previous year
+			ctx.M12PrevYearBD = GetBusinessDaysForMonth(api, currentYear - 1, 12)
+
+			Return ctx
+		End Function
+
+		'==================================================================
+		' Look up business days from A#990050 for a specific year & month
+		' using the Assumption-driver POV.
+		'==================================================================
+		Private Function GetBusinessDaysForMonth(ByVal api As FinanceRulesApi, _
+												  ByVal year As Integer, _
+												  ByVal month As Integer) As Decimal
+
+			Dim sTime   As String = year.ToString() & "M" & month.ToString()
+			Dim sScript As String = _
+				"C#"  & BD_CUBE & _
+				":E#" & BD_ENTITY & _
+				":P#None" & _
+				":C#" & BD_CONS & _
+				":S#" & BD_SCENARIO & _
+				":T#" & sTime & _
+				":V#" & BD_VIEW & _
+				":A#" & BD_ACCOUNT & _
+				":F#" & BD_FLOW & _
+				":O#" & BD_ORIGIN & _
+				":I#" & BD_IC & _
+				":U1#" & BD_UD1 & _
+				":U2#" & BD_UD2 & _
+				":U3#" & BD_UD3 & _
+				":U4#" & BD_UD4 & _
+				":U5#" & BD_UD5 & _
+				":U6#" & BD_UD6 & _
+				":U7#" & BD_UD7 & _
+				":U8#" & BD_UD8
+
+			Return GetCellAmount(api, sScript)
+		End Function
+
+		'==================================================================
+		' Sum all advisory accounts at A#<acct>:V#YTD
+		'==================================================================
+		Private Function SumAdvisoryAccounts(ByVal api As FinanceRulesApi) As Decimal
+			Dim total As Decimal = 0D
+			For Each sAcct As String In ADVISORY_ACCOUNTS
+				total += GetCellAmount(api, "A#" & sAcct & ":" & VIEW_YTD)
+			Next
+			Return total
+		End Function
+
+
+		'==================================================================
+		' Utility helpers
+		'==================================================================
+
+		' Divide-by-zero-safe division. Returns 0 if the denominator is 0.
+		Private Function SafeDivide(ByVal numerator As Decimal, _
+									 ByVal denominator As Decimal) As Decimal
+			If denominator = 0D Then Return 0D
+			Return numerator / denominator
+		End Function
+
+		' Safe cell read - returns 0 on Nothing / NoData / exception.
+		Private Function GetCellAmount(ByVal api As FinanceRulesApi, _
+									   ByVal memberScript As String) As Decimal
+			Try
+				Dim oCell As DataCell = api.Data.GetDataCell(memberScript)
+
+				If oCell Is Nothing Then Return 0D
+				If oCell.CellStatus.IsNoData Then Return 0D
+
+				Return oCell.CellAmount
+			Catch ex As Exception
+				Return 0D
+			End Try
+		End Function
+
+		' Consistent log line.
+		Private Sub LogValue(ByVal si As SessionInfo, _
+							 ByVal label As String, _
+							 ByVal name As String, _
+							 ByVal value As Decimal)
+			BRApi.ErrorLog.LogMessage(si, label & " - " & name & ": " & value.ToString())
+		End Sub
+
+		Private Sub LogValue(ByVal si As SessionInfo, _
+							 ByVal label As String, _
+							 ByVal name As String, _
+							 ByVal value As Integer)
+			BRApi.ErrorLog.LogMessage(si, label & " - " & name & ": " & value.ToString())
+		End Sub
+
+		' Log the contents of a BusinessDayContext.
+		Private Sub LogBusinessDayContext(ByVal si As SessionInfo, _
+										   ByVal label As String, _
+										   ByVal ctx As BusinessDayContext)
+			LogValue(si, label, "Annual BD",        ctx.TotalAnnualBD)
+			LogValue(si, label, "YTD BD",           ctx.YTDBusinessDays)
+			LogValue(si, label, "MTD BD",           ctx.MTDBusinessDays)
+			LogValue(si, label, "M11 YTD BD",       ctx.M11YTDBusinessDays)
+			LogValue(si, label, "Prev year M12 BD", ctx.M12PrevYearBD)
+		End Sub
+
+	End Class
+
+End Namespace
