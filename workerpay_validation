@@ -1,0 +1,259 @@
+"""
+Excel Data Validation Script
+============================
+Reads an Excel file, applies validation rules, and writes a new Excel file
+with flagged issues highlighted.
+
+USAGE:
+    python validate_excel.py input.xlsx output.xlsx
+
+OUTPUT:
+    The output workbook contains:
+      - "Data" sheet: original data + extra columns ("Has_Issue", "Issues")
+                      with bad cells highlighted in red
+      - "Issues_Summary" sheet: one row per flagged cell with column, row,
+                                value, and rule violated
+
+Tweak the CONFIG section below to change thresholds, add columns,
+or add new rules.
+"""
+
+import sys
+from datetime import datetime
+import pandas as pd
+from openpyxl import load_workbook
+from openpyxl.styles import Font, PatternFill, Alignment
+from openpyxl.utils import get_column_letter
+
+# ============================================================
+# CONFIG — change these to tune the validation rules
+# ============================================================
+
+# DESCRP: flag if the value contains any of these substrings (case-insensitive)
+DESCRP_FORBIDDEN_SUBSTRINGS = ["BOA", "FA"]
+
+# HOURLY_RT: flag if value is greater than this (likely a salary entered by mistake)
+HOURLY_RT_MAX = 200.0
+
+# ANNUAL_FT_SALARY: flag if value is below this OR negative
+# Use -1 sentinels are ignored (we only flag when the column should have a real value)
+ANNUAL_FT_SALARY_MIN = 30000.0
+
+# Sentinel value used by source system to mean "not applicable" — we DON'T flag these
+SENTINEL_VALUES = {-1, "-1", "", None}
+
+# Date columns and their expected format (mmddyyyy as 8-digit string/number)
+DATE_COLUMNS = ["TERMINATION_DT", "ORG_INST_SRV_DT"]
+DATE_FORMAT = "%m%d%Y"
+
+# Highlight style for cells with issues
+ISSUE_FILL = PatternFill("solid", start_color="FFC7CE")  # light red
+ISSUE_FONT_COLOR = "9C0006"                              # dark red text
+
+
+# ============================================================
+# Validators — each returns either None (clean) or a string (reason)
+# ============================================================
+
+def validate_descrp(value):
+    if value is None or (isinstance(value, float) and pd.isna(value)):
+        return None
+    text = str(value).upper()
+    hits = [tok for tok in DESCRP_FORBIDDEN_SUBSTRINGS if tok in text]
+    if hits:
+        return f"DESCRP contains forbidden token(s): {', '.join(hits)}"
+    return None
+
+
+def validate_hourly_rt(value):
+    if value in SENTINEL_VALUES:
+        return None
+    if isinstance(value, float) and pd.isna(value):
+        return None
+    try:
+        num = float(value)
+    except (TypeError, ValueError):
+        return f"HOURLY_RT is not numeric: {value!r}"
+    if num == -1:
+        return None  # sentinel
+    if num > HOURLY_RT_MAX:
+        return f"HOURLY_RT {num:,.2f} exceeds max {HOURLY_RT_MAX:,.2f} (likely a salary, not an hourly rate)"
+    if num < 0:
+        return f"HOURLY_RT is negative: {num:,.2f}"
+    return None
+
+
+def validate_annual_salary(value):
+    if value in SENTINEL_VALUES:
+        return None
+    if isinstance(value, float) and pd.isna(value):
+        return None
+    try:
+        num = float(value)
+    except (TypeError, ValueError):
+        return f"ANNUAL_FT_SALARY is not numeric: {value!r}"
+    if num == -1:
+        return None  # sentinel
+    if num < 0:
+        return f"ANNUAL_FT_SALARY is negative: {num:,.2f}"
+    if num < ANNUAL_FT_SALARY_MIN:
+        return f"ANNUAL_FT_SALARY {num:,.2f} is below minimum {ANNUAL_FT_SALARY_MIN:,.2f}"
+    return None
+
+
+def validate_date(value, col_name):
+    """Validate that value is a parseable date in DATE_FORMAT (mmddyyyy)."""
+    # Blank is allowed (e.g., active employees have no termination date)
+    if value is None or value == "" or (isinstance(value, float) and pd.isna(value)):
+        return None
+    # Convert to string, strip whitespace, drop trailing ".0" from float coercion
+    s = str(value).strip()
+    if s.endswith(".0"):
+        s = s[:-2]
+    # Pad to 8 chars if leading zero was dropped (e.g. 1032017 -> 01032017)
+    if s.isdigit() and len(s) == 7:
+        s = "0" + s
+    if not s.isdigit() or len(s) != 8:
+        return f"{col_name} is not in mmddyyyy format: {value!r}"
+    try:
+        dt = datetime.strptime(s, DATE_FORMAT)
+    except ValueError:
+        return f"{col_name} is not a valid date: {value!r}"
+    # Sanity bound on the year
+    if dt.year < 1900 or dt.year > 2100:
+        return f"{col_name} year out of range: {dt.year}"
+    return None
+
+
+# ============================================================
+# Main
+# ============================================================
+
+def validate_workbook(input_path, output_path):
+    print(f"Reading {input_path}...")
+    # Read everything as-is; force date columns to string so leading zeros survive
+    dtype_map = {col: str for col in DATE_COLUMNS}
+    df = pd.read_excel(input_path, dtype=dtype_map)
+    print(f"Loaded {len(df):,} rows, {len(df.columns)} columns")
+
+    # Collect issues
+    # issues_per_row[i] = list of "Column: reason" strings for row i
+    issues_per_row = [[] for _ in range(len(df))]
+    # cell-level issues for highlighting + summary sheet
+    # each entry: (excel_row, col_name, value, reason)
+    cell_issues = []
+
+    def check_column(col_name, validator, *extra_args):
+        if col_name not in df.columns:
+            print(f"  WARN: column '{col_name}' not found, skipping")
+            return
+        for i, value in enumerate(df[col_name]):
+            reason = validator(value, *extra_args) if extra_args else validator(value)
+            if reason:
+                issues_per_row[i].append(f"{col_name}: {reason}")
+                cell_issues.append((i + 2, col_name, value, reason))  # +2 for header + 1-indexed
+
+    print("Validating DESCRP...")
+    check_column("DESCRP", validate_descrp)
+    print("Validating HOURLY_RT...")
+    check_column("HOURLY_RT", validate_hourly_rt)
+    print("Validating ANNUAL_FT_SALARY...")
+    check_column("ANNUAL_FT_SALARY", validate_annual_salary)
+    for date_col in DATE_COLUMNS:
+        print(f"Validating {date_col}...")
+        check_column(date_col, validate_date, date_col)
+
+    # Build summary columns
+    df["Has_Issue"] = ["YES" if iss else "" for iss in issues_per_row]
+    df["Issues"] = [" | ".join(iss) if iss else "" for iss in issues_per_row]
+
+    total_flagged_rows = sum(1 for iss in issues_per_row if iss)
+    total_flagged_cells = len(cell_issues)
+    print(f"\nFound {total_flagged_cells:,} flagged cells across {total_flagged_rows:,} rows")
+
+    # Write to Excel
+    print(f"\nWriting {output_path}...")
+    with pd.ExcelWriter(output_path, engine="openpyxl") as writer:
+        df.to_excel(writer, sheet_name="Data", index=False)
+
+        # Issues summary sheet
+        if cell_issues:
+            summary_df = pd.DataFrame(
+                cell_issues, columns=["Excel_Row", "Column", "Value", "Issue"]
+            )
+        else:
+            summary_df = pd.DataFrame(columns=["Excel_Row", "Column", "Value", "Issue"])
+        summary_df.to_excel(writer, sheet_name="Issues_Summary", index=False)
+
+    # Re-open with openpyxl for formatting + cell highlighting
+    wb = load_workbook(output_path)
+    ws = wb["Data"]
+
+    # Header style
+    header_font = Font(name="Arial", bold=True, color="FFFFFF")
+    header_fill = PatternFill("solid", start_color="305496")
+    for cell in ws[1]:
+        cell.font = header_font
+        cell.fill = header_fill
+        cell.alignment = Alignment(horizontal="center", vertical="center")
+
+    # Build col_name -> column letter lookup
+    col_letter = {ws.cell(row=1, column=c).value: get_column_letter(c)
+                  for c in range(1, ws.max_column + 1)}
+
+    # Highlight flagged cells
+    issue_font = Font(name="Arial", size=10, color=ISSUE_FONT_COLOR, bold=True)
+    for excel_row, col_name, _value, _reason in cell_issues:
+        letter = col_letter.get(col_name)
+        if letter is None:
+            continue
+        cell = ws[f"{letter}{excel_row}"]
+        cell.fill = ISSUE_FILL
+        cell.font = issue_font
+
+    # Also highlight Has_Issue + Issues columns on flagged rows
+    has_issue_letter = col_letter.get("Has_Issue")
+    issues_letter = col_letter.get("Issues")
+    for i, iss in enumerate(issues_per_row):
+        if not iss:
+            continue
+        excel_row = i + 2
+        if has_issue_letter:
+            ws[f"{has_issue_letter}{excel_row}"].fill = ISSUE_FILL
+            ws[f"{has_issue_letter}{excel_row}"].font = issue_font
+        if issues_letter:
+            ws[f"{issues_letter}{excel_row}"].fill = ISSUE_FILL
+
+    # Freeze + filter + a couple of widths
+    ws.freeze_panes = "A2"
+    ws.auto_filter.ref = ws.dimensions
+    if has_issue_letter:
+        ws.column_dimensions[has_issue_letter].width = 11
+    if issues_letter:
+        ws.column_dimensions[issues_letter].width = 80
+
+    # Style the summary sheet too
+    ws2 = wb["Issues_Summary"]
+    for cell in ws2[1]:
+        cell.font = header_font
+        cell.fill = header_fill
+        cell.alignment = Alignment(horizontal="center", vertical="center")
+    ws2.freeze_panes = "A2"
+    if ws2.max_row > 1:
+        ws2.auto_filter.ref = ws2.dimensions
+    ws2.column_dimensions["A"].width = 11
+    ws2.column_dimensions["B"].width = 20
+    ws2.column_dimensions["C"].width = 20
+    ws2.column_dimensions["D"].width = 80
+
+    wb.save(output_path)
+    print(f"Done. {total_flagged_cells:,} cells flagged, {total_flagged_rows:,} rows affected.")
+    print(f"  - 'Data' sheet: full data with flagged cells highlighted in red")
+    print(f"  - 'Issues_Summary' sheet: one row per flagged cell")
+
+
+if __name__ == "__main__":
+    if len(sys.argv) != 3:
+        print("Usage: python validate_excel.py <input.xlsx> <output.xlsx>")
+        sys.exit(1)
+    validate_workbook(sys.argv[1], sys.argv[2])
