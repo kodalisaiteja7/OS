@@ -1,0 +1,205 @@
+'===========================================================================
+' BUSINESS RULE: ClearFlowDirectData
+' TYPE:          Finance Rule
+' FUNCTION:      Custom Calculate (attach to a Data Management Step)
+' PURPOSE:       Clears all data for F#Direct and F#Direct_Offset flow
+'                members across the Data Unit defined by the DM Step
+'                (Cube / Scenario / Entity / Time).
+'
+' SETUP STEPS:
+'   1. Go to Application > Business Rules > New
+'   2. Name it (e.g. "ClearFlowDirectData"), Type = Finance
+'   3. Paste this code and Save/Compile
+'   4. In Data Management, create or edit a Sequence
+'   5. Add a "Custom Calculate" Step
+'   6. Set Cube, Scenario, Entity, Time on the Step
+'   7. Under Business Rule, select "ClearFlowDirectData"
+'   8. Run the Sequence
+'
+' CONFIGURATION:
+'   Edit the CONFIGURATION SECTION below before deploying.
+'===========================================================================
+
+Imports System
+Imports System.Collections.Generic
+Imports System.Data
+Imports System.Globalization
+Imports System.IO
+Imports Microsoft.VisualBasic
+Imports OneStream.Finance.Engine
+Imports OneStream.Shared.Common
+Imports OneStream.Shared.Engine
+Imports OneStream.Shared.Wcf
+Imports OneStream.Stage.Engine
+
+Namespace OneStream.BusinessRule.Finance.ClearFlowDirectData
+
+    Public Class MainClass
+
+        Public Function Main(ByVal si As SessionInfo,
+                             ByVal globals As BRGlobals,
+                             ByVal api As Object,
+                             ByVal args As FinanceRuleArgs) As Object
+            Try
+                Select Case args.FunctionType
+
+                    Case Is = FinanceRuleFunction.CustomCalculate
+                        Dim financeApi As FinanceRulesApi = CType(api, FinanceRulesApi)
+                        ExecuteClear(si, globals, financeApi, args)
+
+                    Case Else
+                        ' No action required for other function types
+
+                End Select
+
+            Catch ex As Exception
+                brapi.ErrorLog.LogMessage(si, "ClearFlowDirectData",
+                    "FATAL ERROR: " & ex.Message & " | StackTrace: " & ex.StackTrace)
+                Throw
+            End Try
+
+            Return Nothing
+        End Function
+
+        '-------------------------------------------------------------------
+        ' MAIN CLEAR ROUTINE
+        '-------------------------------------------------------------------
+        Private Sub ExecuteClear(ByVal si As SessionInfo,
+                                 ByVal globals As BRGlobals,
+                                 ByVal api As FinanceRulesApi,
+                                 ByVal args As FinanceRuleArgs)
+
+            '================================================================
+            ' CONFIGURATION SECTION
+            ' ---------------------------------------------------------------
+            ' flowMembers     - Flow members to clear. Add/remove as needed.
+            ' accountFilter   - Account scope. Change to a specific parent
+            '                   (e.g. "A#TotalBS.Base") to narrow the clear.
+            ' originMember    - Origin member name only (no O# prefix).
+            '                   Use "Import" for loaded data. Use "" to clear
+            '                   all origins.
+            ' clearInput      - True = clear manually entered input values.
+            ' clearTranslated - True = clear FX-translated values.
+            ' clearConsolid   - True = clear consolidated roll-up values.
+            ' clearDurable    - True = clear durable calculated values.
+            '================================================================
+            Dim flowMembers      As String()  = {"Direct", "Direct_Offset"}
+            Dim accountFilter    As String    = "A#AllAccounts.Base"
+            Dim originMember     As String    = "Import"
+            Dim clearInput       As Boolean   = True
+            Dim clearTranslated  As Boolean   = True
+            Dim clearConsolid    As Boolean   = True
+            Dim clearDurable     As Boolean   = True
+            '================================================================
+
+            Dim originFilter As String = If(String.IsNullOrEmpty(originMember),
+                                            "",
+                                            "O#" & originMember)
+
+            brapi.ErrorLog.LogMessage(si, "ClearFlowDirectData",
+                "=== ClearFlowDirectData Started ===")
+            brapi.ErrorLog.LogMessage(si, "ClearFlowDirectData",
+                String.Format("Scope — Accounts: {0} | Origin: {1} | " &
+                              "ClearInput: {2} | ClearTranslated: {3} | " &
+                              "ClearConsolidated: {4} | ClearDurable: {5}",
+                              accountFilter, originFilter,
+                              clearInput, clearTranslated,
+                              clearConsolid, clearDurable))
+
+            '----------------------------------------------------------------
+            ' Loop through each Flow member and apply both clear methods
+            '----------------------------------------------------------------
+            For Each flowMember As String In flowMembers
+
+                Dim flowFilter As String = "F#" & flowMember
+
+                brapi.ErrorLog.LogMessage(si, "ClearFlowDirectData",
+                    "--- Processing: " & flowFilter & " ---")
+
+                '------------------------------------------------------------
+                ' STEP 1: ClearCalculatedData
+                '         Handles calculated, translated, consolidated, and
+                '         durable data. Also clears input when clearInput=True.
+                '------------------------------------------------------------
+                Try
+                    api.Data.ClearCalculatedData(
+                        clearInput,
+                        clearTranslated,
+                        clearConsolid,
+                        clearDurable,
+                        accountFilter,
+                        flowFilter,
+                        originFilter
+                    )
+                    brapi.ErrorLog.LogMessage(si, "ClearFlowDirectData",
+                        "Step 1 (ClearCalculatedData) complete for " & flowFilter)
+
+                Catch ex As Exception
+                    brapi.ErrorLog.LogMessage(si, "ClearFlowDirectData",
+                        "Step 1 FAILED for " & flowFilter & ": " & ex.Message)
+                    Throw
+                End Try
+
+                '------------------------------------------------------------
+                ' STEP 2: DataBuffer Clear
+                '         Safety net — explicitly resets any remaining input
+                '         data cells to NoData via the DataBuffer API.
+                '         This catches cells that ClearCalculatedData may miss.
+                '------------------------------------------------------------
+                Try
+                    ' Build the filter for the data buffer
+                    Dim bufferFilter As String = accountFilter & ":" & flowFilter
+                    If Not String.IsNullOrEmpty(originFilter) Then
+                        bufferFilter &= ":" & originFilter
+                    End If
+
+                    Dim dataBuffer As DataBuffer =
+                        api.Data.GetDataBufferUsingFormula(bufferFilter)
+
+                    If dataBuffer IsNot Nothing AndAlso
+                       dataBuffer.CellBuffer IsNot Nothing AndAlso
+                       dataBuffer.CellBuffer.Count > 0 Then
+
+                        Dim cellsReset As Integer = 0
+
+                        For Each cell As DataBufferCell In dataBuffer.CellBuffer
+                            ' Only reset cells that still hold a value
+                            If cell.CellStatus <> DataBufferCellStatus.NoData Then
+                                cell.CellStatus  = DataBufferCellStatus.NoData
+                                cell.IsModified  = True
+                                cellsReset += 1
+                            End If
+                        Next
+
+                        If cellsReset > 0 Then
+                            api.Data.SetDataBuffer(dataBuffer)
+                            brapi.ErrorLog.LogMessage(si, "ClearFlowDirectData",
+                                "Step 2 (DataBuffer) reset " & cellsReset &
+                                " cell(s) for " & flowFilter)
+                        Else
+                            brapi.ErrorLog.LogMessage(si, "ClearFlowDirectData",
+                                "Step 2 (DataBuffer) — no remaining cells to clear for " &
+                                flowFilter)
+                        End If
+
+                    Else
+                        brapi.ErrorLog.LogMessage(si, "ClearFlowDirectData",
+                            "Step 2 (DataBuffer) — buffer empty or null for " & flowFilter)
+                    End If
+
+                Catch ex As Exception
+                    brapi.ErrorLog.LogMessage(si, "ClearFlowDirectData",
+                        "Step 2 FAILED for " & flowFilter & ": " & ex.Message)
+                    Throw
+                End Try
+
+            Next flowMember
+
+            brapi.ErrorLog.LogMessage(si, "ClearFlowDirectData",
+                "=== ClearFlowDirectData Finished Successfully ===")
+
+        End Sub
+
+    End Class
+
+End Namespace
