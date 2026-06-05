@@ -3,3 +3,73 @@ SELECT DISTINCT
 FROM dbo.XFC_FA_Map
 WHERE [YEAR] = 2026
 ORDER BY RGN_CD;
+
+
+DECLARE @FiscalYear INT = 2026;
+DECLARE @Period INT = 2;
+
+WITH jld_emp AS
+(
+    SELECT
+        CAST(LEFT(jld.line_descr, 7) AS CHAR(7)) AS emplid,
+        jld.deptid,
+        jld.account,
+        jld.monetary_amount
+    FROM dbo.XFC_FPA_JLD AS jld
+    WHERE jld.fiscal_year = @FiscalYear
+      AND jld.accounting_period = @Period
+),
+ranked_map AS
+(
+    SELECT
+        m.emplid,
+        m.rgn_cd,
+        m.type_ej_cd,
+        ROW_NUMBER() OVER
+        (
+            PARTITION BY m.emplid
+            ORDER BY m.[year] DESC, m.[month] DESC
+        ) AS rn
+    FROM dbo.XFC_FA_Map AS m
+    WHERE
+    (
+        m.[year] < @FiscalYear
+        OR
+        (
+            m.[year] = @FiscalYear
+            AND m.[month] <= @Period
+        )
+    )
+    AND m.type_ej_cd <> 'STR'
+)
+SELECT
+    rm.rgn_cd,
+    j.deptid AS cost_center,
+    j.account,
+    SUM(j.monetary_amount) AS total_amount
+FROM jld_emp AS j
+INNER JOIN ranked_map AS rm
+    ON rm.emplid = j.emplid
+   AND rm.rn = 1
+GROUP BY
+    rm.rgn_cd,
+    j.deptid,
+    j.account
+ORDER BY
+    rm.rgn_cd,
+    j.deptid,
+    j.account;
+
+
+
+
+
+SELECT TOP 100
+    LINE_DESCR,
+    LEFT(LINE_DESCR, 7) AS ExtractedEmployeeID,
+    DEPTID,
+    ACCOUNT,
+    MONETARY_AMOUNT
+FROM dbo.XFC_FPA_JLD
+WHERE FISCAL_YEAR = 2026
+  AND ACCOUNTING_PERIOD = 2;
