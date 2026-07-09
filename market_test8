@@ -1,0 +1,416 @@
+Imports System
+Imports System.Collections.Generic
+Imports System.Data
+Imports System.Data.Common
+Imports System.Globalization
+Imports System.IO
+Imports System.Linq
+Imports System.Text
+Imports Microsoft.VisualBasic
+
+Imports OneStream.Finance.Database
+Imports OneStream.Finance.Engine
+Imports OneStream.Shared.Common
+Imports OneStream.Shared.Database
+Imports OneStream.Shared.Engine
+Imports OneStream.Shared.Wcf
+Imports OneStream.Stage.Database
+Imports OneStream.Stage.Engine
+
+Namespace OneStream.BusinessRule.DashboardStringFunction.Market_Test
+
+	Public Class MainClass
+
+		'Entity dimension name
+		Private Const EntityDimName As String = "MarketManagement"
+
+		'UD1 dimension name from your screenshot
+		Private Const UD1DimName As String = "TopUD1Dim"
+
+		'UD1 parent where Cost Centers are stored
+		Private Const UD1SearchRoot As String = "CostCenter"
+
+		Public Function Main(ByVal si As SessionInfo, ByVal globals As BRGlobals, ByVal api As Object, ByVal args As DashboardStringFunctionArgs) As Object
+
+			Try
+
+				If args Is Nothing Then
+					BRApi.ErrorLog.LogMessage(si, "Market_Test XFBR: args is Nothing")
+					Return ""
+				End If
+
+				Dim functionName As String = ""
+
+				If args.FunctionName IsNot Nothing Then
+					functionName = args.FunctionName.ToString()
+				End If
+
+				BRApi.ErrorLog.LogMessage(si, "Market_Test XFBR Started. FunctionName=[" & functionName & "]")
+
+
+				If functionName.XFEqualsIgnoreCase("SayHello") Then
+					Return "Hello"
+				End If
+
+
+				'------------------------------------------------------------
+				' Column 2
+				' Selected Entity with matching UD1
+				'
+				' Market_1  -> E#Market_1:U1#Market_1
+				' Region_4  -> E#Region_4:U1#00004
+				'------------------------------------------------------------
+				If functionName.XFEqualsIgnoreCase("GetEntityWithUD1") Then
+
+					Dim entityName As String = GetArgValue(si, args, "EntityName")
+
+					BRApi.ErrorLog.LogMessage(si, "GetEntityWithUD1: EntityName raw=[" & entityName & "]")
+
+					If String.IsNullOrWhiteSpace(entityName) Then
+						Return ""
+					End If
+
+					entityName = CleanMemberName(entityName)
+
+					Dim ud1Name As String = GetUD1NameForEntity(si, entityName)
+
+					If String.IsNullOrWhiteSpace(ud1Name) Then
+						BRApi.ErrorLog.LogMessage(si, "GetEntityWithUD1: No matching UD1 found for Entity=[" & entityName & "]. Returning Entity only.")
+						Return "E#" & entityName
+					End If
+
+					Dim result As String = "E#" & entityName & ":U1#" & ud1Name
+
+					BRApi.ErrorLog.LogMessage(si, "GetEntityWithUD1: Return=[" & result & "]")
+
+					Return result
+
+				End If
+
+
+				'------------------------------------------------------------
+				' Column 1
+				' Children of selected Entity with matching UD1
+				'
+				' ParentEntity=Market_1
+				'
+				' Returns:
+				' E#Region_4:U1#00004, E#Region_20:U1#00020
+				'------------------------------------------------------------
+				If functionName.XFEqualsIgnoreCase("GetEntityChildrenWithUD1") Then
+
+					Dim parentEntity As String = GetArgValue(si, args, "ParentEntity")
+
+					BRApi.ErrorLog.LogMessage(si, "GetEntityChildrenWithUD1: ParentEntity raw=[" & parentEntity & "]")
+
+					If String.IsNullOrWhiteSpace(parentEntity) Then
+						Return ""
+					End If
+
+					parentEntity = CleanMemberName(parentEntity)
+
+					Dim memberFilter As String = "E#" & parentEntity & ".Children"
+
+					BRApi.ErrorLog.LogMessage(si, "GetEntityChildrenWithUD1: EntityDimName=[" & EntityDimName & "]")
+					BRApi.ErrorLog.LogMessage(si, "GetEntityChildrenWithUD1: MemberFilter=[" & memberFilter & "]")
+
+					Dim entityDimPk As DimPk = BRApi.Finance.Dim.GetDimPk(si, EntityDimName)
+
+					If entityDimPk Is Nothing Then
+						BRApi.ErrorLog.LogMessage(si, "GetEntityChildrenWithUD1: entityDimPk is Nothing. Check EntityDimName.")
+						Return ""
+					End If
+
+					Dim memberInfos As List(Of MemberInfo) = BRApi.Finance.Members.GetMembersUsingFilter(si, entityDimPk, memberFilter, Nothing)
+
+					If memberInfos Is Nothing OrElse memberInfos.Count = 0 Then
+						BRApi.ErrorLog.LogMessage(si, "GetEntityChildrenWithUD1: No children returned.")
+						Return ""
+					End If
+
+					Dim sb As New StringBuilder()
+
+					For Each mi As MemberInfo In memberInfos
+
+						If mi IsNot Nothing AndAlso mi.Member IsNot Nothing Then
+
+							Dim childEntityName As String = mi.Member.Name
+
+							BRApi.ErrorLog.LogMessage(si, "GetEntityChildrenWithUD1: Entity Child=[" & childEntityName & "]")
+
+							Dim ud1Name As String = GetUD1NameForEntity(si, childEntityName)
+
+							If String.IsNullOrWhiteSpace(ud1Name) Then
+
+								BRApi.ErrorLog.LogMessage(si, "GetEntityChildrenWithUD1: No UD1 match for [" & childEntityName & "]. Skipping.")
+
+							Else
+
+								If sb.Length > 0 Then
+									sb.Append(", ")
+								End If
+
+								sb.Append("E#")
+								sb.Append(childEntityName)
+								sb.Append(":U1#")
+								sb.Append(ud1Name)
+
+								BRApi.ErrorLog.LogMessage(si, "GetEntityChildrenWithUD1: Pair Added=[E#" & childEntityName & ":U1#" & ud1Name & "]")
+
+							End If
+
+						End If
+
+					Next
+
+					Dim result As String = sb.ToString()
+
+					BRApi.ErrorLog.LogMessage(si, "GetEntityChildrenWithUD1: Final Return=[" & result & "]")
+
+					Return result
+
+				End If
+
+
+				BRApi.ErrorLog.LogMessage(si, "Market_Test XFBR: No matching function found. FunctionName=[" & functionName & "]")
+				Return ""
+
+			Catch ex As Exception
+
+				BRApi.ErrorLog.LogMessage(si, "Market_Test XFBR ERROR: " & ex.Message & vbCrLf & ex.StackTrace)
+				Throw ErrorHandler.LogWrite(si, New XFException(si, ex))
+
+			End Try
+
+		End Function
+
+
+		Private Function GetArgValue(ByVal si As SessionInfo, ByVal args As DashboardStringFunctionArgs, ByVal key As String) As String
+
+			Try
+
+				If args Is Nothing OrElse args.NameValuePairs Is Nothing Then
+					Return ""
+				End If
+
+				Dim value As String = args.NameValuePairs.XFGetValue(key, "")
+
+				If value Is Nothing Then
+					Return ""
+				End If
+
+				Return value.Trim()
+
+			Catch ex As Exception
+				BRApi.ErrorLog.LogMessage(si, "GetArgValue ERROR for key=[" & key & "]: " & ex.Message)
+				Return ""
+			End Try
+
+		End Function
+
+
+		'------------------------------------------------------------
+		' Main UD1 mapping logic
+		'
+		' Market_1  -> Market_1
+		' Market_18 -> Market_18
+		' Region_4  -> 00004
+		' Region_20 -> 00020
+		'
+		' Fallback: searches UD1 description/name.
+		'------------------------------------------------------------
+		Private Function GetUD1NameForEntity(ByVal si As SessionInfo, ByVal entityName As String) As String
+
+			Try
+
+				If String.IsNullOrWhiteSpace(entityName) Then
+					Return ""
+				End If
+
+				entityName = CleanMemberName(entityName)
+
+				'Rule 1:
+				'If Entity is Market_x, UD1 is also Market_x
+				If entityName.StartsWith("Market_", StringComparison.InvariantCultureIgnoreCase) Then
+
+					BRApi.ErrorLog.LogMessage(si, "GetUD1NameForEntity: Market pattern matched. Entity=[" & entityName & "], UD1=[" & entityName & "]")
+
+					Return entityName
+
+				End If
+
+
+				'Rule 2:
+				'If Entity is Region_x, UD1 is zero padded number
+				'Region_4   -> 00004
+				'Region_20  -> 00020
+				'Region_344 -> 00344
+				Dim regionCode As String = GetRegionCodeFromEntityName(entityName)
+
+				If Not String.IsNullOrWhiteSpace(regionCode) Then
+
+					BRApi.ErrorLog.LogMessage(si, "GetUD1NameForEntity: Region pattern matched. Entity=[" & entityName & "], UD1=[" & regionCode & "]")
+
+					Return regionCode
+
+				End If
+
+
+				'Rule 3:
+				'Fallback search by UD1 description or name
+				Dim normalizedEntity As String = NormalizeForCompare(entityName)
+
+				Dim ud1DimPk As DimPk = BRApi.Finance.Dim.GetDimPk(si, UD1DimName)
+
+				If ud1DimPk Is Nothing Then
+					BRApi.ErrorLog.LogMessage(si, "GetUD1NameForEntity: ud1DimPk is Nothing. Check UD1DimName=[" & UD1DimName & "]")
+					Return ""
+				End If
+
+				Dim ud1Filter As String = "U1#" & UD1SearchRoot & ".Base"
+
+				BRApi.ErrorLog.LogMessage(si, "GetUD1NameForEntity: UD1Filter=[" & ud1Filter & "]")
+
+				Dim ud1Members As List(Of MemberInfo) = BRApi.Finance.Members.GetMembersUsingFilter(si, ud1DimPk, ud1Filter, Nothing)
+
+				If ud1Members Is Nothing OrElse ud1Members.Count = 0 Then
+					BRApi.ErrorLog.LogMessage(si, "GetUD1NameForEntity: No UD1 members returned.")
+					Return ""
+				End If
+
+				For Each mi As MemberInfo In ud1Members
+
+					If mi IsNot Nothing AndAlso mi.Member IsNot Nothing Then
+
+						Dim ud1Name As String = mi.Member.Name
+						Dim ud1Desc As String = GetDescriptionSafe(mi.Member)
+
+						Dim normalizedUD1Name As String = NormalizeForCompare(ud1Name)
+						Dim normalizedUD1Desc As String = NormalizeForCompare(ud1Desc)
+
+						If normalizedEntity.XFEqualsIgnoreCase(normalizedUD1Name) Then
+							BRApi.ErrorLog.LogMessage(si, "GetUD1NameForEntity: MATCH BY NAME. Entity=[" & entityName & "], UD1=[" & ud1Name & "]")
+							Return ud1Name
+						End If
+
+						If normalizedEntity.XFEqualsIgnoreCase(normalizedUD1Desc) Then
+							BRApi.ErrorLog.LogMessage(si, "GetUD1NameForEntity: MATCH BY DESCRIPTION. Entity=[" & entityName & "], UD1=[" & ud1Name & "], Desc=[" & ud1Desc & "]")
+							Return ud1Name
+						End If
+
+						If normalizedUD1Desc.XFContainsIgnoreCase(normalizedEntity) Then
+							BRApi.ErrorLog.LogMessage(si, "GetUD1NameForEntity: CONTAINS MATCH BY DESCRIPTION. Entity=[" & entityName & "], UD1=[" & ud1Name & "], Desc=[" & ud1Desc & "]")
+							Return ud1Name
+						End If
+
+					End If
+
+				Next
+
+				BRApi.ErrorLog.LogMessage(si, "GetUD1NameForEntity: No match found for Entity=[" & entityName & "]")
+				Return ""
+
+			Catch ex As Exception
+				BRApi.ErrorLog.LogMessage(si, "GetUD1NameForEntity ERROR for Entity=[" & entityName & "]: " & ex.Message)
+				Return ""
+			End Try
+
+		End Function
+
+
+		Private Function GetRegionCodeFromEntityName(ByVal entityName As String) As String
+
+			If String.IsNullOrWhiteSpace(entityName) Then
+				Return ""
+			End If
+
+			Dim cleanName As String = entityName.Trim()
+
+			If Not cleanName.StartsWith("Region_", StringComparison.InvariantCultureIgnoreCase) Then
+				Return ""
+			End If
+
+			Dim numberPart As String = cleanName.Replace("Region_", "").Trim()
+
+			Dim regionNumber As Integer = 0
+
+			If Integer.TryParse(numberPart, regionNumber) Then
+				Return regionNumber.ToString("00000")
+			End If
+
+			Return ""
+
+		End Function
+
+
+		Private Function GetDescriptionSafe(ByVal memberObj As Object) As String
+
+			Try
+
+				If memberObj Is Nothing Then
+					Return ""
+				End If
+
+				Dim prop As System.Reflection.PropertyInfo = memberObj.GetType().GetProperty("Description")
+
+				If prop Is Nothing Then
+					Return ""
+				End If
+
+				Dim val As Object = prop.GetValue(memberObj, Nothing)
+
+				If val Is Nothing Then
+					Return ""
+				End If
+
+				Return val.ToString()
+
+			Catch
+				Return ""
+			End Try
+
+		End Function
+
+
+		Private Function CleanMemberName(ByVal memberName As String) As String
+
+			If String.IsNullOrWhiteSpace(memberName) Then
+				Return ""
+			End If
+
+			Dim cleanName As String = memberName.Trim()
+
+			cleanName = cleanName.Replace("E#", "")
+			cleanName = cleanName.Replace("U1#", "")
+			cleanName = cleanName.Replace(".ChildrenInclusive", "")
+			cleanName = cleanName.Replace(".Children", "")
+			cleanName = cleanName.Replace(".Base", "")
+
+			Return cleanName.Trim()
+
+		End Function
+
+
+		Private Function NormalizeForCompare(ByVal value As String) As String
+
+			If String.IsNullOrWhiteSpace(value) Then
+				Return ""
+			End If
+
+			Dim cleanValue As String = value.Trim().ToLowerInvariant()
+
+			cleanValue = cleanValue.Replace("_", "")
+			cleanValue = cleanValue.Replace(" ", "")
+			cleanValue = cleanValue.Replace("-", "")
+			cleanValue = cleanValue.Replace(".", "")
+			cleanValue = cleanValue.Replace(",", "")
+			cleanValue = cleanValue.Replace("(", "")
+			cleanValue = cleanValue.Replace(")", "")
+
+			Return cleanValue
+
+		End Function
+
+	End Class
+
+End Namespace
