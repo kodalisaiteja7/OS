@@ -1,0 +1,15 @@
+If args.FunctionName.XFEqualsIgnoreCase("GetUD1FromEntity") Then
+
+    Dim entityName As String = args.NameValuePairs.XFGetValue("EntityName", "")
+
+    If String.IsNullOrWhiteSpace(entityName) Then
+        Return "U1#None"
+    End If
+
+    'Remove prefix if user passes E#abc instead of abc
+    entityName = entityName.Replace("E#", "").Trim()
+
+    'Return matching UD1 member
+    Return "U1#" & entityName
+
+End If
