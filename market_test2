@@ -1,0 +1,15 @@
+Row member filter:
+
+A#[BR Communication Systems_MM].ChildrenInclusive
+
+Remove this part from the row:
+
+:U1#|!pr_MtM_PL_Sel_UD!|
+
+Column 1 member filter for children:
+
+XFBR(Market_Test, GetEntityChildrenWithUD1, ParentEntity=|!pr_MtM_PL_Sel_Ent!|)
+
+Column 2 member filter for selected entity:
+
+XFBR(Market_Test, GetEntityWithUD1, EntityName=|!pr_MtM_PL_Sel_Ent!|)
