@@ -1,0 +1,9 @@
+Return api.Data.GetDataCell( _
+    "(A#930026_ClientCashCredit:V#Periodic * -1) +" & _
+    "(A#930020_ClientLoansMargin:V#Periodic * -1) +" & _
+    "(A#930021_ClientLoansRsv:V#Periodic * -1) +" & _
+    "(A#930025_ClientHoldingsCredit:V#Periodic * -1) +" & _
+    "A#454130:V#Periodic +" & _
+    "A#454155:V#Periodic +" & _
+    "A#451000:V#Periodic +" & _
+    "A#454140:V#Periodic")
