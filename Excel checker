@@ -1,0 +1,1 @@
+=COUNTIFS(Sheet2!A:A,A2,Sheet2!B:B,B2,Sheet2!C:C,C2,Sheet2!D:D,D2)>0
