@@ -1,23 +1,2 @@
-Currently, the Full P&L division total includes the market and region cost centers but excludes the division’s own cost center.
-
-For example:
-
-West Division Direct Expense
-= Sum of West markets and regions
-+ West divisional cost center 06276
-
-Important requirements:
-
-Each division has its own cost center.
-Do not combine all four divisional cost centers.
-Only division-level results should change.
-Market- and region-level results must remain unchanged.
-The change applies to the Direct flow in Allocation_MM.
-The BEP and MTM views are already correct; only the Full P&L is affected.
-
-My main concern is double-counting. Before coding, verify whether the divisional cost center already exists anywhere in the Entity or UD1 rollup.
-
-For implementation, I would prefer:
-
-A metadata-driven or allocation-based solution if this value must be available throughout OneStream.
-An XFBR only if this is strictly a reporting/display requirement.
+Users must be able to select one or more markets from the dashboard and retrieve the same detailed information currently exported by running the CP_SQL Data Adapter directly.
+When the selected market is changed, the dashboard must refresh and display the corresponding market data.
