@@ -1,0 +1,5 @@
+Hi Cam, we’re currently working on creating a validation dashboard that compares data between the Firm Act and Market Management cubes. The objective is to allow users to compare the two cubes and confirm that the data is accurate.
+
+While validating the dashboard using the attached FirmAct vs. MM spreadsheet, we noticed that the Firm Income Statement and Income Statement MM values are not tying. Do you have any thoughts on why these values might not match? One possibility we discussed is that PeopleSoft may be pulling data for certain BUs, while the Market Management cube may be using journal-sourced data. If the underlying sources or logic are different, the two reports may not be expected to tie.
+
+Since you were involved in developing the original logic, could you please help us understand how the data is sourced and whether these two reports are expected to tie? This will help us determine whether the dashboard validation is working correctly or whether the comparison logic needs to be adjusted. If needed, we can schedule a quick call to review it together.
