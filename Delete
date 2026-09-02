@@ -1,11 +1,23 @@
-The business wants access to the detailed records behind the financial results, with filters such as:
+Currently, the Full P&L division total includes the market and region cost centers but excludes the division’s own cost center.
 
-Employee ID
-Market and region
-Operating unit or branch
-Period
-Possibly GL account
+For example:
 
-They do not necessarily need SQL access. They need the ability to search the same underlying information that you and Sai currently retrieve using SQL.
+West Division Direct Expense
+= Sum of West markets and regions
++ West divisional cost center 06276
 
-My recommendation is a read-only OneStream dashboard backed by a parameterized Data Adapter or Business Rule. Do not give users a free-text SQL box because it creates security and performance risks.
+Important requirements:
+
+Each division has its own cost center.
+Do not combine all four divisional cost centers.
+Only division-level results should change.
+Market- and region-level results must remain unchanged.
+The change applies to the Direct flow in Allocation_MM.
+The BEP and MTM views are already correct; only the Full P&L is affected.
+
+My main concern is double-counting. Before coding, verify whether the divisional cost center already exists anywhere in the Entity or UD1 rollup.
+
+For implementation, I would prefer:
+
+A metadata-driven or allocation-based solution if this value must be available throughout OneStream.
+An XFBR only if this is strictly a reporting/display requirement.
