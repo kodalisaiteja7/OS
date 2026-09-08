@@ -1,1 +1,3 @@
 {FPA_PL_Export_Helper}{ExportFullCsv}{SelectedTime=|!prm_FPA_Time!|,RegionList=|!prm_FPA_Market!|}
+
+FileSourceType=Application, UrlOrFullFileName=[Internal/Users/|UserName|/Temp/FPA_PL_FullExport.csv], OpenInXFPageIfPossible=False
