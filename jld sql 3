@@ -1,0 +1,84 @@
+DECLARE @SelectedTime VARCHAR(20)
+    = '|!prm_FPA_Time!|';
+
+DECLARE @RegionList VARCHAR(MAX)
+    = '|!prm_FPA_Market!|';
+
+DECLARE @SelectedYear INT =
+    TRY_CONVERT(INT, LEFT(@SelectedTime, 4));
+
+DECLARE @SelectedPeriod INT =
+    TRY_CONVERT(
+        INT,
+        SUBSTRING(
+            @SelectedTime,
+            CHARINDEX('M', @SelectedTime) + 1,
+            2
+        )
+    );
+
+
+WITH FilteredJLD AS
+(
+    SELECT
+        Fiscal_Year,
+        Accounting_Period,
+        Business_Unit,
+        Journal_ID,
+        Posted_Date,
+        Account,
+        Chartfield1,
+        Chartfield3,
+        Operating_Unit,
+        Monetary_Amount
+
+    FROM XFC_FPA_JLD
+
+    WHERE Fiscal_Year =
+          CONVERT(VARCHAR(4), @SelectedYear)
+
+      AND TRY_CONVERT(INT, Accounting_Period)
+          BETWEEN 1 AND @SelectedPeriod
+),
+
+Regions AS
+(
+    SELECT LTRIM(RTRIM(value)) AS Region
+    FROM STRING_SPLIT(@RegionList, ';')
+)
+
+SELECT
+    CASE
+        WHEN fmap.FA_NO IS NOT NULL
+            THEN 'FA_PL'
+
+        WHEN fmap.FA_NO IS NULL
+             AND jld.Operating_Unit IS NOT NULL
+            THEN 'BR_PL'
+
+        ELSE 'NO MARKET'
+    END AS PL_Type,
+
+    jld.Fiscal_Year,
+    jld.Accounting_Period,
+    jld.Business_Unit,
+    jld.Journal_ID,
+    jld.Posted_Date,
+    jld.Account,
+    jld.Chartfield1,
+    jld.Chartfield3,
+    jld.Operating_Unit,
+
+    COALESCE(
+        fmap.RGN_CD,
+        bmap.Region
+    ) AS Rgn_Cd,
+
+    COALESCE(
+        fmap.EmplID,
+        ''
+    ) AS EmplID,
+
+    jld.Monetary_Amount
+
+FROM FilteredJLD jld
