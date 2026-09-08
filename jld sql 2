@@ -1,0 +1,165 @@
+/* ============================================================
+   FPA P&L Data Extract
+   Dashboard Parameters:
+       prm_FPA_Time
+       prm_FPA_Market
+   ============================================================ */
+
+DECLARE @SelectedTime VARCHAR(20)
+    = '|!prm_FPA_Time!|';
+
+DECLARE @RegionList VARCHAR(MAX)
+    = '|!prm_FPA_Market!|';
+
+
+/* ------------------------------------------------------------
+   Convert 2026M7 into:
+       @SelectedYear   = 2026
+       @SelectedPeriod = 7
+   ------------------------------------------------------------ */
+
+DECLARE @SelectedYear INT =
+    TRY_CONVERT(
+        INT,
+        LEFT(@SelectedTime, 4)
+    );
+
+DECLARE @SelectedPeriod INT =
+    TRY_CONVERT(
+        INT,
+        SUBSTRING(
+            @SelectedTime,
+            CHARINDEX('M', @SelectedTime) + 1,
+            2
+        )
+    );
+
+
+/* ------------------------------------------------------------
+   Latest FA mapping as of selected dashboard Time
+   ------------------------------------------------------------ */
+
+WITH LatestFA AS
+(
+    SELECT
+        FA_NO,
+        RGN_CD,
+        EmplID,
+
+        ROW_NUMBER() OVER
+        (
+            PARTITION BY FA_NO
+            ORDER BY YEAR DESC, MONTH DESC
+        ) AS rn
+
+    FROM XFC_FA_Map
+
+    WHERE
+        (YEAR * 100 + MONTH)
+        <=
+        (@SelectedYear * 100 + @SelectedPeriod)
+)
+
+
+SELECT
+
+    CASE
+
+        WHEN fmap.FA_NO IS NOT NULL
+            THEN 'FA_PL'
+
+        WHEN fmap.FA_NO IS NULL
+             AND jld.Operating_Unit IS NOT NULL
+            THEN 'BR_PL'
+
+        ELSE 'NO MARKET'
+
+    END AS PL_Type,
+
+
+    jld.Fiscal_Year,
+    jld.Accounting_Period,
+    jld.Business_Unit,
+    jld.Journal_ID,
+    jld.Posted_Date,
+    jld.Account,
+    jld.Chartfield1,
+    jld.Chartfield3,
+    jld.Operating_Unit,
+
+    COALESCE(
+        fmap.Rgn_Cd,
+        bmap.Region
+    ) AS Rgn_Cd,
+
+    COALESCE(
+        fmap.EmplID,
+        ''
+    ) AS EmplID,
+
+    jld.Monetary_Amount
+
+
+FROM XFC_FPA_JLD jld
+
+
+LEFT JOIN
+(
+    SELECT
+        FA_NO,
+        RGN_CD,
+        EmplID
+
+    FROM LatestFA
+
+    WHERE rn = 1
+
+) fmap
+
+    ON fmap.FA_NO = jld.Chartfield1
+
+
+LEFT JOIN XFC_BranchLocation_Map bmap
+
+    ON bmap.Year = jld.Fiscal_Year
+    AND bmap.Branch = jld.Operating_Unit
+
+
+WHERE
+
+    /* Require valid dashboard parameters */
+    @SelectedYear IS NOT NULL
+    AND @SelectedPeriod IS NOT NULL
+    AND NULLIF(@RegionList, '') IS NOT NULL
+
+
+    /* Selected fiscal year */
+    AND jld.Fiscal_Year =
+        CONVERT(VARCHAR(4), @SelectedYear)
+
+
+    /* YTD:
+       Selecting 2026M7 returns periods 1 through 7
+    */
+    AND TRY_CONVERT(
+        INT,
+        jld.Accounting_Period
+    )
+    BETWEEN 1 AND @SelectedPeriod
+
+
+    /* Selected Market */
+    AND COALESCE(
+            fmap.Rgn_Cd,
+            bmap.Region
+        )
+        IN
+        (
+            SELECT
+                LTRIM(RTRIM(value))
+
+            FROM STRING_SPLIT(
+                @RegionList,
+                ';'
+            )
+        );
