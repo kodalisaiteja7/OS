@@ -1,0 +1,303 @@
+/* ============================================================
+   FPA P&L EXTRACT - PREVIEW
+   Shows maximum 5,000 rows in dashboard Grid
+   ============================================================ */
+
+DECLARE @SelectedTime VARCHAR(20)
+    = '|!prm_FPA_Time!|';
+
+DECLARE @RegionList VARCHAR(MAX)
+    = '|!prm_FPA_Market!|';
+
+
+/* ------------------------------------------------------------
+   Parse selected Time
+   Example:
+       2026M7
+       Year   = 2026
+       Period = 7
+   ------------------------------------------------------------ */
+
+DECLARE @SelectedYear INT =
+    TRY_CONVERT(
+        INT,
+        LEFT(@SelectedTime, 4)
+    );
+
+DECLARE @SelectedPeriod INT =
+    TRY_CONVERT(
+        INT,
+        SUBSTRING(
+            @SelectedTime,
+            CHARINDEX('M', @SelectedTime) + 1,
+            2
+        )
+    );
+
+DECLARE @SelectedYearText VARCHAR(4) =
+    CONVERT(VARCHAR(4), @SelectedYear);
+
+
+
+;WITH
+
+
+/* ============================================================
+   1. Build selected YTD periods
+
+   For 2026M7 this produces:
+       1
+       2
+       3
+       4
+       5
+       6
+       7
+
+   This avoids TRY_CONVERT(Accounting_Period) on every JLD row.
+   ============================================================ */
+
+Periods AS
+(
+    SELECT
+        CONVERT(VARCHAR(2), P.PeriodNum) AS Accounting_Period
+
+    FROM
+    (
+        VALUES
+            (1),
+            (2),
+            (3),
+            (4),
+            (5),
+            (6),
+            (7),
+            (8),
+            (9),
+            (10),
+            (11),
+            (12)
+    ) P(PeriodNum)
+
+    WHERE P.PeriodNum <= @SelectedPeriod
+),
+
+
+/* ============================================================
+   2. Parse selected Market's region list
+
+   Example Market 11 parameter value:
+
+   73;221;27;348;230;72;163;306;379;378;14;380
+   ============================================================ */
+
+SelectedRegions AS
+(
+    SELECT DISTINCT
+
+        CONVERT(
+            VARCHAR(20),
+            LTRIM(RTRIM(value))
+        ) AS Region
+
+    FROM STRING_SPLIT(
+        @RegionList,
+        ';'
+    )
+
+    WHERE LTRIM(RTRIM(value)) <> ''
+),
+
+
+/* ============================================================
+   3. Filter JLD FIRST
+
+   This is important for performance.
+
+   Instead of joining FA/Branch against the entire JLD table,
+   first reduce JLD to selected year + selected periods.
+   ============================================================ */
+
+FilteredJLD AS
+(
+    SELECT
+
+        jld.Fiscal_Year,
+        jld.Accounting_Period,
+        jld.Business_Unit,
+        jld.Journal_ID,
+        jld.Posted_Date,
+        jld.Account,
+        jld.Chartfield1,
+        jld.Chartfield3,
+        jld.Operating_Unit,
+        jld.Monetary_Amount
+
+    FROM XFC_FPA_JLD jld
+
+    INNER JOIN Periods p
+
+        ON p.Accounting_Period =
+           jld.Accounting_Period
+
+    WHERE
+
+        jld.Fiscal_Year =
+        @SelectedYearText
+),
+
+
+/* ============================================================
+   4. Determine only the FA numbers actually needed
+
+   If JLD has 200,000 rows but only 3,000 unique Chartfield1
+   values, we only need FA history for those 3,000.
+   ============================================================ */
+
+RelevantFA AS
+(
+    SELECT DISTINCT
+
+        jld.Chartfield1 AS FA_NO
+
+    FROM FilteredJLD jld
+
+    WHERE
+
+        jld.Chartfield1 IS NOT NULL
+        AND jld.Chartfield1 <> ''
+),
+
+
+/* ============================================================
+   5. Rank FA mapping history ONLY for relevant FA numbers
+   ============================================================ */
+
+LatestFARanked AS
+(
+    SELECT
+
+        fm.FA_NO,
+        fm.RGN_CD,
+        fm.EmplID,
+
+        ROW_NUMBER() OVER
+        (
+            PARTITION BY fm.FA_NO
+
+            ORDER BY
+                fm.YEAR DESC,
+                fm.MONTH DESC
+        ) AS rn
+
+    FROM XFC_FA_Map fm
+
+    INNER JOIN RelevantFA rfa
+
+        ON rfa.FA_NO =
+           fm.FA_NO
+
+    WHERE
+
+        fm.YEAR < @SelectedYear
+
+        OR
+        (
+            fm.YEAR = @SelectedYear
+            AND fm.MONTH <= @SelectedPeriod
+        )
+),
+
+
+/* ============================================================
+   6. Keep latest FA mapping
+   ============================================================ */
+
+LatestFA AS
+(
+    SELECT
+
+        FA_NO,
+        RGN_CD,
+        EmplID
+
+    FROM LatestFARanked
+
+    WHERE rn = 1
+)
+
+
+/* ============================================================
+   7. FINAL RESULT
+   PREVIEW LIMITED TO 5,000 ROWS
+   ============================================================ */
+
+SELECT TOP (5000)
+
+    CASE
+
+        WHEN fmap.FA_NO IS NOT NULL
+            THEN 'FA_PL'
+
+        WHEN fmap.FA_NO IS NULL
+             AND jld.Operating_Unit IS NOT NULL
+            THEN 'BR_PL'
+
+        ELSE 'NO MARKET'
+
+    END AS PL_Type,
+
+
+    jld.Fiscal_Year,
+    jld.Accounting_Period,
+    jld.Business_Unit,
+    jld.Journal_ID,
+    jld.Posted_Date,
+    jld.Account,
+    jld.Chartfield1,
+    jld.Chartfield3,
+    jld.Operating_Unit,
+
+
+    COALESCE(
+        fmap.RGN_CD,
+        bmap.Region
+    ) AS Rgn_Cd,
+
+
+    COALESCE(
+        fmap.EmplID,
+        ''
+    ) AS EmplID,
+
+
+    jld.Monetary_Amount
+
+
+FROM FilteredJLD jld
+
+
+LEFT JOIN LatestFA fmap
+
+    ON fmap.FA_NO =
+       jld.Chartfield1
+
+
+LEFT JOIN XFC_BranchLocation_Map bmap
+
+    ON bmap.Year =
+       jld.Fiscal_Year
+
+    AND bmap.Branch =
+        jld.Operating_Unit
+
+
+/* Only keep regions belonging to selected Market */
+
+INNER JOIN SelectedRegions sr
+
+    ON sr.Region =
+       COALESCE(
+           fmap.RGN_CD,
+           bmap.Region
+       );
