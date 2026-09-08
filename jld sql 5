@@ -1,0 +1,722 @@
+Imports System
+Imports System.Collections.Generic
+Imports System.Data
+Imports System.Data.Common
+Imports System.Globalization
+Imports System.IO
+Imports System.Text
+
+Imports Microsoft.VisualBasic
+
+Imports OneStream.Finance.Database
+Imports OneStream.Finance.Engine
+Imports OneStream.Shared.Common
+Imports OneStream.Shared.Database
+Imports OneStream.Shared.Engine
+Imports OneStream.Shared.Wcf
+Imports OneStream.Stage.Database
+Imports OneStream.Stage.Engine
+
+
+Namespace OneStream.BusinessRule.DashboardExtender.FPA_PL_Export_Helper
+
+    Public Class MainClass
+
+        Public Function Main( _
+            ByVal si As SessionInfo, _
+            ByVal globals As BRGlobals, _
+            ByVal api As Object, _
+            ByVal args As DashboardExtenderArgs _
+        ) As Object
+
+            Try
+
+                Select Case args.FunctionType
+
+                    Case Is = DashboardExtenderFunctionType.ComponentSelectionChanged
+
+                        If args.FunctionName.XFEqualsIgnoreCase("ExportFullCsv") Then
+
+                            Return Me.ExportFullCsv(si, args)
+
+                        End If
+
+                End Select
+
+                Return Nothing
+
+            Catch ex As Exception
+
+                Throw ErrorHandler.LogWrite( _
+                    si, _
+                    New XFException(si, ex) _
+                )
+
+            End Try
+
+        End Function
+
+
+
+        '===============================================================
+        ' EXPORT FULL CSV
+        '===============================================================
+        Private Function ExportFullCsv( _
+            ByVal si As SessionInfo, _
+            ByVal args As DashboardExtenderArgs _
+        ) As XFSelectionChangedTaskResult
+
+            Try
+
+                Dim taskResult As New XFSelectionChangedTaskResult()
+
+                taskResult.IsOK = True
+                taskResult.ShowMessageBox = False
+                taskResult.Message = String.Empty
+
+
+                '=======================================================
+                ' 1. Get dashboard selections
+                '=======================================================
+
+                Dim selectedTime As String = _
+                    args.NameValuePairs.XFGetValue( _
+                        "SelectedTime", _
+                        String.Empty _
+                    ).Trim()
+
+
+                Dim regionList As String = _
+                    args.NameValuePairs.XFGetValue( _
+                        "RegionList", _
+                        String.Empty _
+                    ).Trim()
+
+
+                If String.IsNullOrWhiteSpace(selectedTime) Then
+
+                    Throw New XFException( _
+                        si, _
+                        "Please select a Time before exporting." _
+                    )
+
+                End If
+
+
+                If String.IsNullOrWhiteSpace(regionList) Then
+
+                    Throw New XFException( _
+                        si, _
+                        "Please select a Market before exporting." _
+                    )
+
+                End If
+
+
+
+                '=======================================================
+                ' 2. Parse Time
+                '
+                ' Examples:
+                ' 2026M7
+                ' T#2026M7
+                '=======================================================
+
+                If selectedTime.StartsWith( _
+                    "T#", _
+                    StringComparison.OrdinalIgnoreCase _
+                ) Then
+
+                    selectedTime = selectedTime.Substring(2)
+
+                End If
+
+
+                Dim mPosition As Integer = _
+                    selectedTime.IndexOf( _
+                        "M"c _
+                    )
+
+
+                If mPosition <= 0 Then
+
+                    Throw New XFException( _
+                        si, _
+                        "Invalid Time value: " & selectedTime _
+                    )
+
+                End If
+
+
+                Dim selectedYear As Integer = 0
+                Dim selectedPeriod As Integer = 0
+
+
+                If Not Integer.TryParse( _
+                    selectedTime.Substring(0, mPosition), _
+                    selectedYear _
+                ) Then
+
+                    Throw New XFException( _
+                        si, _
+                        "Unable to determine year from Time: " & selectedTime _
+                    )
+
+                End If
+
+
+                If Not Integer.TryParse( _
+                    selectedTime.Substring(mPosition + 1), _
+                    selectedPeriod _
+                ) Then
+
+                    Throw New XFException( _
+                        si, _
+                        "Unable to determine period from Time: " & selectedTime _
+                    )
+
+                End If
+
+
+                If selectedPeriod < 1 OrElse selectedPeriod > 12 Then
+
+                    Throw New XFException( _
+                        si, _
+                        "Invalid accounting period: " & selectedPeriod.ToString() _
+                    )
+
+                End If
+
+
+
+                '=======================================================
+                ' 3. Full SQL
+                '
+                ' IMPORTANT:
+                ' No TOP 5000 here.
+                ' This query returns ALL qualifying records.
+                '=======================================================
+
+                Dim sql As New StringBuilder()
+
+
+                sql.AppendLine(";WITH Periods AS")
+                sql.AppendLine("(")
+
+                sql.AppendLine("    SELECT")
+                sql.AppendLine("        CONVERT(VARCHAR(2), P.PeriodNum) AS Accounting_Period")
+
+                sql.AppendLine("    FROM")
+                sql.AppendLine("    (")
+
+                sql.AppendLine("        VALUES")
+                sql.AppendLine("            (1),")
+                sql.AppendLine("            (2),")
+                sql.AppendLine("            (3),")
+                sql.AppendLine("            (4),")
+                sql.AppendLine("            (5),")
+                sql.AppendLine("            (6),")
+                sql.AppendLine("            (7),")
+                sql.AppendLine("            (8),")
+                sql.AppendLine("            (9),")
+                sql.AppendLine("            (10),")
+                sql.AppendLine("            (11),")
+                sql.AppendLine("            (12)")
+
+                sql.AppendLine("    ) P(PeriodNum)")
+
+                sql.AppendLine("    WHERE P.PeriodNum <= @SelectedPeriod")
+
+                sql.AppendLine("),")
+
+
+                '=======================================================
+                ' Selected Market Regions
+                '=======================================================
+
+                sql.AppendLine("SelectedRegions AS")
+                sql.AppendLine("(")
+
+                sql.AppendLine("    SELECT DISTINCT")
+                sql.AppendLine("        CONVERT(VARCHAR(20), LTRIM(RTRIM(value))) AS Region")
+
+                sql.AppendLine("    FROM STRING_SPLIT(@RegionList, ';')")
+
+                sql.AppendLine("    WHERE LTRIM(RTRIM(value)) <> ''")
+
+                sql.AppendLine("),")
+
+
+                '=======================================================
+                ' Filter JLD first
+                '=======================================================
+
+                sql.AppendLine("FilteredJLD AS")
+                sql.AppendLine("(")
+
+                sql.AppendLine("    SELECT")
+                sql.AppendLine("        jld.Fiscal_Year,")
+                sql.AppendLine("        jld.Accounting_Period,")
+                sql.AppendLine("        jld.Business_Unit,")
+                sql.AppendLine("        jld.Journal_ID,")
+                sql.AppendLine("        jld.Posted_Date,")
+                sql.AppendLine("        jld.Account,")
+                sql.AppendLine("        jld.Chartfield1,")
+                sql.AppendLine("        jld.Chartfield3,")
+                sql.AppendLine("        jld.Operating_Unit,")
+                sql.AppendLine("        jld.Monetary_Amount")
+
+                sql.AppendLine("    FROM XFC_FPA_JLD jld")
+
+                sql.AppendLine("    INNER JOIN Periods p")
+                sql.AppendLine("        ON p.Accounting_Period = jld.Accounting_Period")
+
+                sql.AppendLine("    WHERE")
+                sql.AppendLine("        jld.Fiscal_Year = CONVERT(VARCHAR(4), @SelectedYear)")
+
+                sql.AppendLine("),")
+
+
+                '=======================================================
+                ' Only FA numbers required for current extract
+                '=======================================================
+
+                sql.AppendLine("RelevantFA AS")
+                sql.AppendLine("(")
+
+                sql.AppendLine("    SELECT DISTINCT")
+                sql.AppendLine("        jld.Chartfield1 AS FA_NO")
+
+                sql.AppendLine("    FROM FilteredJLD jld")
+
+                sql.AppendLine("    WHERE")
+                sql.AppendLine("        jld.Chartfield1 IS NOT NULL")
+                sql.AppendLine("        AND jld.Chartfield1 <> ''")
+
+                sql.AppendLine("),")
+
+
+                '=======================================================
+                ' Latest FA mapping
+                '=======================================================
+
+                sql.AppendLine("LatestFARanked AS")
+                sql.AppendLine("(")
+
+                sql.AppendLine("    SELECT")
+                sql.AppendLine("        fm.FA_NO,")
+                sql.AppendLine("        fm.RGN_CD,")
+                sql.AppendLine("        fm.EmplID,")
+
+                sql.AppendLine("        ROW_NUMBER() OVER")
+                sql.AppendLine("        (")
+                sql.AppendLine("            PARTITION BY fm.FA_NO")
+                sql.AppendLine("            ORDER BY")
+                sql.AppendLine("                fm.YEAR DESC,")
+                sql.AppendLine("                fm.MONTH DESC")
+                sql.AppendLine("        ) AS rn")
+
+                sql.AppendLine("    FROM XFC_FA_Map fm")
+
+                sql.AppendLine("    INNER JOIN RelevantFA rfa")
+                sql.AppendLine("        ON rfa.FA_NO = fm.FA_NO")
+
+                sql.AppendLine("    WHERE")
+                sql.AppendLine("        fm.YEAR < @SelectedYear")
+                sql.AppendLine("        OR")
+                sql.AppendLine("        (")
+                sql.AppendLine("            fm.YEAR = @SelectedYear")
+                sql.AppendLine("            AND fm.MONTH <= @SelectedPeriod")
+                sql.AppendLine("        )")
+
+                sql.AppendLine("),")
+
+
+                sql.AppendLine("LatestFA AS")
+                sql.AppendLine("(")
+
+                sql.AppendLine("    SELECT")
+                sql.AppendLine("        FA_NO,")
+                sql.AppendLine("        RGN_CD,")
+                sql.AppendLine("        EmplID")
+
+                sql.AppendLine("    FROM LatestFARanked")
+
+                sql.AppendLine("    WHERE rn = 1")
+
+                sql.AppendLine(")")
+
+
+                '=======================================================
+                ' Full result
+                '=======================================================
+
+                sql.AppendLine("SELECT")
+
+                sql.AppendLine("    CASE")
+
+                sql.AppendLine("        WHEN fmap.FA_NO IS NOT NULL")
+                sql.AppendLine("            THEN 'FA_PL'")
+
+                sql.AppendLine("        WHEN fmap.FA_NO IS NULL")
+                sql.AppendLine("             AND jld.Operating_Unit IS NOT NULL")
+                sql.AppendLine("            THEN 'BR_PL'")
+
+                sql.AppendLine("        ELSE 'NO MARKET'")
+
+                sql.AppendLine("    END AS PL_Type,")
+
+
+                sql.AppendLine("    jld.Fiscal_Year,")
+                sql.AppendLine("    jld.Accounting_Period,")
+                sql.AppendLine("    jld.Business_Unit,")
+                sql.AppendLine("    jld.Journal_ID,")
+                sql.AppendLine("    jld.Posted_Date,")
+                sql.AppendLine("    jld.Account,")
+                sql.AppendLine("    jld.Chartfield1,")
+                sql.AppendLine("    jld.Chartfield3,")
+                sql.AppendLine("    jld.Operating_Unit,")
+
+
+                sql.AppendLine("    COALESCE(")
+                sql.AppendLine("        fmap.RGN_CD,")
+                sql.AppendLine("        bmap.Region")
+                sql.AppendLine("    ) AS Rgn_Cd,")
+
+
+                sql.AppendLine("    COALESCE(")
+                sql.AppendLine("        fmap.EmplID,")
+                sql.AppendLine("        ''")
+                sql.AppendLine("    ) AS EmplID,")
+
+
+                sql.AppendLine("    jld.Monetary_Amount")
+
+
+                sql.AppendLine("FROM FilteredJLD jld")
+
+
+                sql.AppendLine("LEFT JOIN LatestFA fmap")
+                sql.AppendLine("    ON fmap.FA_NO = jld.Chartfield1")
+
+
+                sql.AppendLine("LEFT JOIN XFC_BranchLocation_Map bmap")
+                sql.AppendLine("    ON bmap.Year = jld.Fiscal_Year")
+                sql.AppendLine("    AND bmap.Branch = jld.Operating_Unit")
+
+
+                sql.AppendLine("INNER JOIN SelectedRegions sr")
+
+                sql.AppendLine("    ON sr.Region =")
+                sql.AppendLine("       COALESCE(")
+                sql.AppendLine("           fmap.RGN_CD,")
+                sql.AppendLine("           bmap.Region")
+                sql.AppendLine("       );")
+
+
+
+                '=======================================================
+                ' 4. Parameterized SQL
+                '
+                ' Do NOT concatenate dashboard selections directly
+                ' into SQL.
+                '=======================================================
+
+                Dim dbParams As New List(Of DbParamInfo) From
+                {
+                    New DbParamInfo( _
+                        "SelectedYear", _
+                        selectedYear _
+                    ),
+                    New DbParamInfo( _
+                        "SelectedPeriod", _
+                        selectedPeriod _
+                    ),
+                    New DbParamInfo( _
+                        "RegionList", _
+                        regionList _
+                    )
+                }
+
+
+
+                '=======================================================
+                ' 5. Execute full query
+                '=======================================================
+
+                Dim fileName As String = _
+                    "FPA_PL_FullExport.csv"
+
+
+                Using dbConnApp As DbConnInfo = _
+                    BRApi.Database.CreateApplicationDbConnInfo(si)
+
+
+                    Using dt As DataTable = _
+                        BRApi.Database.ExecuteSqlUsingReader( _
+                            dbConnApp, _
+                            sql.ToString(), _
+                            dbParams, _
+                            True _
+                        )
+
+
+                        If dt Is Nothing Then
+
+                            Throw New XFException( _
+                                si, _
+                                "The export query did not return a result table." _
+                            )
+
+                        End If
+
+
+                        '================================================
+                        ' 6. Convert full result to CSV
+                        '================================================
+
+                        Dim fileBytes As Byte() = _
+                            Me.DataTableToCsvBytes(dt)
+
+
+                        '================================================
+                        ' 7. Save into current user's temporary folder
+                        '================================================
+
+                        BRApi.Utilities.SaveFileBytesToUserTempFolder( _
+                            si, _
+                            si.UserName, _
+                            fileName, _
+                            fileBytes _
+                        )
+
+
+                        BRApi.ErrorLog.LogMessage( _
+                            si, _
+                            "FPA full CSV export completed. " & _
+                            "Time=" & selectedTime & _
+                            ", Rows=" & dt.Rows.Count.ToString() _
+                        )
+
+                    End Using
+
+                End Using
+
+
+                Return taskResult
+
+
+            Catch ex As Exception
+
+                Throw ErrorHandler.LogWrite( _
+                    si, _
+                    New XFException(si, ex) _
+                )
+
+            End Try
+
+        End Function
+
+
+
+        '===============================================================
+        ' DATATABLE -> CSV BYTES
+        '===============================================================
+        Private Function DataTableToCsvBytes( _
+            ByVal dt As DataTable _
+        ) As Byte()
+
+            Try
+
+                Using memoryStream As New MemoryStream()
+
+
+                    'UTF-8 with BOM works nicely when CSV is opened in Excel
+                    Dim utf8Encoding As New UTF8Encoding(True)
+
+
+                    Using writer As New StreamWriter( _
+                        memoryStream, _
+                        utf8Encoding, _
+                        65536, _
+                        True _
+                    )
+
+
+                        '================================================
+                        ' Header
+                        '================================================
+
+                        Dim header As New StringBuilder()
+
+                        For colIndex As Integer = 0 To dt.Columns.Count - 1
+
+                            If colIndex > 0 Then
+                                header.Append(","c)
+                            End If
+
+                            header.Append( _
+                                Me.CsvEscape( _
+                                    dt.Columns(colIndex).ColumnName _
+                                ) _
+                            )
+
+                        Next
+
+                        writer.WriteLine(header.ToString())
+
+
+                        '================================================
+                        ' Rows
+                        '================================================
+
+                        For Each row As DataRow In dt.Rows
+
+                            Dim csvRow As New StringBuilder()
+
+                            For colIndex As Integer = 0 To dt.Columns.Count - 1
+
+                                If colIndex > 0 Then
+                                    csvRow.Append(","c)
+                                End If
+
+
+                                Dim value As String = _
+                                    Me.FormatCsvValue( _
+                                        row(colIndex) _
+                                    )
+
+
+                                csvRow.Append( _
+                                    Me.CsvEscape(value) _
+                                )
+
+                            Next
+
+
+                            writer.WriteLine( _
+                                csvRow.ToString() _
+                            )
+
+                        Next
+
+
+                        writer.Flush()
+
+                    End Using
+
+
+                    Return memoryStream.ToArray()
+
+                End Using
+
+
+            Catch ex As Exception
+
+                Throw ex
+
+            End Try
+
+        End Function
+
+
+
+        '===============================================================
+        ' FORMAT VALUE
+        '===============================================================
+        Private Function FormatCsvValue( _
+            ByVal value As Object _
+        ) As String
+
+            If value Is Nothing _
+                OrElse Convert.IsDBNull(value) Then
+
+                Return String.Empty
+
+            End If
+
+
+            If TypeOf value Is DateTime Then
+
+                Return DirectCast( _
+                    value, _
+                    DateTime _
+                ).ToString( _
+                    "yyyy-MM-dd HH:mm:ss", _
+                    CultureInfo.InvariantCulture _
+                )
+
+            End If
+
+
+            If TypeOf value Is IFormattable Then
+
+                Return DirectCast( _
+                    value, _
+                    IFormattable _
+                ).ToString( _
+                    Nothing, _
+                    CultureInfo.InvariantCulture _
+                )
+
+            End If
+
+
+            Return value.ToString()
+
+        End Function
+
+
+
+        '===============================================================
+        ' PROPER CSV ESCAPING
+        '
+        ' Handles:
+        ' comma
+        ' quote
+        ' CR/LF
+        '===============================================================
+        Private Function CsvEscape( _
+            ByVal value As String _
+        ) As String
+
+            If value Is Nothing Then
+                Return String.Empty
+            End If
+
+
+            Dim quote As String = ChrW(34)
+
+
+            Dim requiresQuotes As Boolean = _
+                value.Contains(",") _
+                OrElse value.Contains(quote) _
+                OrElse value.Contains(vbCr) _
+                OrElse value.Contains(vbLf)
+
+
+            Dim escapedValue As String = _
+                value.Replace( _
+                    quote, _
+                    quote & quote _
+                )
+
+
+            If requiresQuotes Then
+
+                Return _
+                    quote & _
+                    escapedValue & _
+                    quote
+
+            End If
+
+
+            Return escapedValue
+
+        End Function
+
+
+    End Class
+
+End Namespace
