@@ -6,3 +6,6 @@ OtherLiabsBegBal
 GetDataCell((A#I5:F#OpeBal+A#I5:F#OpeBal_Input)-(A#29900:F#OpeBal+A#29900:F#OpeBal_Input)-(A#29050:F#OpeBal+A#29050:F#OpeBal_Input)-(A#29052:F#OpeBal+A#29052:F#OpeBal_Input)-(A#29054:F#OpeBal+A#29054:F#OpeBal_Input)):Name(VIE Other Liabilities)
 
 
+otherLiabsEndBal
+GetDataCell(A#I5-A#29900-A#29050-A#29052-A#29054):Name()
+
