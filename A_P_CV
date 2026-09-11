@@ -1,14 +1,8 @@
 Use this exact expression:
-
+InvOthersBegBal
 GetDataCell((A#B1:U4#None:F#OpeBal:O#Top+A#B1:U4#None:F#OpeBal_Input:O#Top)-(A#12801:U4#None:F#OpeBal:O#Top+A#12801:U4#None:F#OpeBal_Input:O#Top)):Name(Beginning Balance)
 
-That should fix the row name/display.
+OtherLiabsBegBal
+GetDataCell((A#I5:F#OpeBal+A#I5:F#OpeBal_Input)-(A#29900:F#OpeBal+A#29900:F#OpeBal_Input)-(A#29050:F#OpeBal+A#29050:F#OpeBal_Input)-(A#29052:F#OpeBal+A#29052:F#OpeBal_Input)-(A#29054:F#OpeBal+A#29054:F#OpeBal_Input)):Name(VIE Other Liabilities)
 
-The 0 value is a different issue. The calculation syntax itself can be used for Cube View calculations, but we need to determine which component is returning zero.
 
-Temporarily test these four individually:
-
-GetDataCell(A#B1:U4#None:F#OpeBal:O#Top):Name(B1 OpeBal)
-GetDataCell(A#B1:U4#None:F#OpeBal_Input:O#Top):Name(B1 OpeBal Input)
-GetDataCell(A#12801:U4#None:F#OpeBal:O#Top):Name(12801 OpeBal)
-GetDataCell(A#12801:U4#None:F#OpeBal_Input:O#Top):Name(12801 OpeBal Input)
