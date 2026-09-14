@@ -9,3 +9,12 @@ GetDataCell((A#I5:F#OpeBal+A#I5:F#OpeBal_Input)-(A#29900:F#OpeBal+A#29900:F#OpeB
 otherLiabsEndBal
 GetDataCell(A#I5-A#29900-A#29050-A#29052-A#29054):Name()
 
+
+Subline and SH loan roll 
+begginging balance
+Account - GetDataCell(A#29052+A#29054):Name(Subline and SH loan)
+UD4- GetDataCell(U4#None:F#OpeBal:O#Top+U4#None:F#OpeBal_Input:O#Top):Name(Beginning Balance)
+
+
+Subline and SH loan roll 
+endinging balance
