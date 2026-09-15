@@ -1,3 +1,19 @@
+SELECT
+    DisplayValue,
+    ParameterValue
+FROM
+(
+    VALUES
+        (1, 'YTD',     'YTD'),
+        (2, 'Monthly', 'MONTHLY')
+) V
+(
+    SortOrder,
+    DisplayValue,
+    ParameterValue
+)
+ORDER BY SortOrder;
+
 /* ============================================================
    FPA P&L EXTRACT - DASHBOARD PREVIEW
 
