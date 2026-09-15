@@ -1,4 +1,4 @@
-WITH LatestFA AS
+;WITH LatestFA AS
 (
     SELECT
         FA_NO,
@@ -38,31 +38,33 @@ LatestBranch AS
 
         CASE
 
-            WHEN TRY_CONVERT(
+            WHEN TRY_CONVERT
+            (
+                BIGINT,
+                NULLIF(
+                    LTRIM(RTRIM(Branch)),
+                    ''
+                )
+            ) IS NOT NULL
+
+            THEN CONVERT
+            (
+                VARCHAR(30),
+
+                TRY_CONVERT
+                (
                     BIGINT,
                     NULLIF(
                         LTRIM(RTRIM(Branch)),
                         ''
                     )
-                 ) IS NOT NULL
+                )
+            )
 
-            THEN CONVERT(
-                    VARCHAR(30),
-
-                    TRY_CONVERT(
-                        BIGINT,
-                        NULLIF(
-                            LTRIM(RTRIM(Branch)),
-                            ''
-                        )
-                    )
-                 )
-
-            ELSE UPPER(
-                    LTRIM(
-                        RTRIM(Branch)
-                    )
-                 )
+            ELSE
+                UPPER(
+                    LTRIM(RTRIM(Branch))
+                )
 
         END AS Branch_Key,
 
@@ -75,31 +77,33 @@ LatestBranch AS
 
                 CASE
 
-                    WHEN TRY_CONVERT(
+                    WHEN TRY_CONVERT
+                    (
+                        BIGINT,
+                        NULLIF(
+                            LTRIM(RTRIM(Branch)),
+                            ''
+                        )
+                    ) IS NOT NULL
+
+                    THEN CONVERT
+                    (
+                        VARCHAR(30),
+
+                        TRY_CONVERT
+                        (
                             BIGINT,
                             NULLIF(
                                 LTRIM(RTRIM(Branch)),
                                 ''
                             )
-                         ) IS NOT NULL
+                        )
+                    )
 
-                    THEN CONVERT(
-                            VARCHAR(30),
-
-                            TRY_CONVERT(
-                                BIGINT,
-                                NULLIF(
-                                    LTRIM(RTRIM(Branch)),
-                                    ''
-                                )
-                            )
-                         )
-
-                    ELSE UPPER(
-                            LTRIM(
-                                RTRIM(Branch)
-                            )
-                         )
+                    ELSE
+                        UPPER(
+                            LTRIM(RTRIM(Branch))
+                        )
 
                 END
 
@@ -108,9 +112,9 @@ LatestBranch AS
                 CASE
 
                     WHEN NULLIF(
-                            LTRIM(RTRIM(Region)),
-                            ''
-                         ) IS NOT NULL
+                        LTRIM(RTRIM(Region)),
+                        ''
+                    ) IS NOT NULL
 
                     THEN 0
 
@@ -134,7 +138,9 @@ LatestBranch AS
 )
 
 
+
 SELECT TOP 5000
+
 
     CASE
 
@@ -142,12 +148,10 @@ SELECT TOP 5000
             THEN 'FA_PL'
 
         WHEN fmap.FA_NO IS NULL
-
              AND NULLIF(
                     LTRIM(RTRIM(jld.Operating_Unit)),
                     ''
                  ) IS NOT NULL
-
             THEN 'BR_PL'
 
         ELSE 'NO_MARKET'
@@ -177,7 +181,6 @@ SELECT TOP 5000
             LTRIM(RTRIM(bmap.Region)),
             ''
         )
-
     ) AS RGN_CD,
 
 
@@ -190,7 +193,9 @@ SELECT TOP 5000
     jld.Monetary_Amount
 
 
+
 FROM XFC_FPA_JLD jld
+
 
 
 LEFT JOIN
@@ -203,10 +208,10 @@ LEFT JOIN
     FROM LatestFA
 
     WHERE rn = 1
-
 ) fmap
 
     ON fmap.FA_NO = jld.Chartfield1
+
 
 
 LEFT JOIN
@@ -220,55 +225,56 @@ LEFT JOIN
     FROM LatestBranch
 
     WHERE rn = 1
-
 ) bmap
 
     ON bmap.[Year] = jld.Fiscal_Year
-
 
     AND bmap.Branch_Key =
 
         CASE
 
-            WHEN TRY_CONVERT(
+            WHEN TRY_CONVERT
+            (
+                BIGINT,
+                NULLIF(
+                    LTRIM(RTRIM(jld.Operating_Unit)),
+                    ''
+                )
+            ) IS NOT NULL
+
+            THEN CONVERT
+            (
+                VARCHAR(30),
+
+                TRY_CONVERT
+                (
                     BIGINT,
                     NULLIF(
                         LTRIM(RTRIM(jld.Operating_Unit)),
                         ''
                     )
-                 ) IS NOT NULL
+                )
+            )
 
-            THEN CONVERT(
-                    VARCHAR(30),
-
-                    TRY_CONVERT(
-                        BIGINT,
-                        NULLIF(
-                            LTRIM(RTRIM(jld.Operating_Unit)),
-                            ''
-                        )
-                    )
-                 )
-
-            ELSE UPPER(
-                    LTRIM(
-                        RTRIM(jld.Operating_Unit)
-                    )
-                 )
+            ELSE
+                UPPER(
+                    LTRIM(RTRIM(jld.Operating_Unit))
+                )
 
         END
 
 
+
 WHERE
 
+
     /* ========================================================
-       TIME - YEAR
+       YEAR FROM TIME
 
        2026M7 -> 2026
        ======================================================== */
 
     jld.Fiscal_Year =
-
         LEFT(
             REPLACE(
                 '|!prm_FPA_Time!|',
@@ -279,112 +285,78 @@ WHERE
         )
 
 
-
     /* ========================================================
-       VIEW
+       YTD / MONTHLY
 
-       YTD:
-           2026M7 -> Periods 1 through 7
+       2026M7 + YTD
+           -> 1 through 7
 
-       MONTHLY:
-           2026M7 -> Period 7 only
+       2026M7 + MONTHLY
+           -> 7 through 7
        ======================================================== */
 
-    AND
-    (
-        (
-            UPPER(
-                LTRIM(
-                    RTRIM('|!prm_FPA_View!|')
-                )
-            ) = 'YTD'
+    AND TRY_CONVERT(
+            INT,
+            jld.Accounting_Period
+        )
 
-            AND TRY_CONVERT(
+        BETWEEN
+
+            CASE
+
+                WHEN UPPER(
+                        LTRIM(
+                            RTRIM('|!prm_FPA_View!|')
+                        )
+                     ) = 'MONTHLY'
+
+                THEN TRY_CONVERT
+                (
                     INT,
-                    jld.Accounting_Period
-                )
-                BETWEEN 1 AND
 
-                TRY_CONVERT(
-                    INT,
-
-                    SUBSTRING(
+                    SUBSTRING
+                    (
                         REPLACE(
                             '|!prm_FPA_Time!|',
                             'T#',
                             ''
                         ),
-
-                        CHARINDEX(
-                            'M',
-                            REPLACE(
-                                '|!prm_FPA_Time!|',
-                                'T#',
-                                ''
-                            )
-                        ) + 1,
-
+                        6,
                         2
                     )
                 )
-        )
+
+                ELSE 1
+
+            END
 
 
-        OR
+        AND
 
 
-        (
-            UPPER(
-                LTRIM(
-                    RTRIM('|!prm_FPA_View!|')
+            TRY_CONVERT
+            (
+                INT,
+
+                SUBSTRING
+                (
+                    REPLACE(
+                        '|!prm_FPA_Time!|',
+                        'T#',
+                        ''
+                    ),
+                    6,
+                    2
                 )
-            ) IN ('MONTHLY', 'MONTH')
-
-            AND TRY_CONVERT(
-                    INT,
-                    jld.Accounting_Period
-                )
-                =
-
-                TRY_CONVERT(
-                    INT,
-
-                    SUBSTRING(
-                        REPLACE(
-                            '|!prm_FPA_Time!|',
-                            'T#',
-                            ''
-                        ),
-
-                        CHARINDEX(
-                            'M',
-                            REPLACE(
-                                '|!prm_FPA_Time!|',
-                                'T#',
-                                ''
-                            )
-                        ) + 1,
-
-                        2
-                    )
-                )
-        )
-    )
-
+            )
 
 
     /* ========================================================
-       MARKET
+       MARKET FILTER
 
        prm_FPA_Market example:
 
        73;221;27;348;230;72;163;306;379;378;14;380
-
-       Instead of STRING_SPLIT, check exact membership using
-       semicolon delimiters.
-
-       Example:
-           ;73;221;27;
        ======================================================== */
 
     AND CHARINDEX
@@ -405,6 +377,7 @@ WHERE
         )
         +
         ';',
+
 
         ';'
         +
