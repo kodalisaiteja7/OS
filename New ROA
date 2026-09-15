@@ -1,0 +1,1385 @@
+Imports System
+Imports System.Data
+Imports System.Data.Common
+Imports System.IO
+Imports System.Collections.Generic
+Imports System.Globalization
+Imports System.Linq
+Imports Microsoft.VisualBasic
+Imports System.Windows.Forms
+Imports OneStream.Shared.Common
+Imports OneStream.Shared.Wcf
+Imports OneStream.Shared.Engine
+Imports OneStream.Shared.Database
+Imports OneStream.Stage.Engine
+Imports OneStream.Stage.Database
+Imports OneStream.Finance.Engine
+Imports OneStream.Finance.Database
+
+
+Namespace OneStream.BusinessRule.Finance.ROA_Calc
+
+    Public Class MainClass
+
+
+        '==================================================================
+        ' Finance Business Rule: ROA Calculation
+        '
+        ' Supports:
+        '
+        ' Dynamic CubeView:
+        '   GetROA
+        '   GetROA_MM
+        '
+        ' Stored Data Management calculation:
+        '   StoreROA
+        '   StoreROA_MM
+        '
+        ' DM controls:
+        '   Cube
+        '   Entity
+        '   Parent
+        '   Consolidation
+        '   Scenario
+        '   Time
+        '
+        ' Code controls:
+        '   View
+        '   Account
+        '   Flow
+        '   Origin
+        '   IC
+        '   UD1-UD8
+        '==================================================================
+
+
+        '==================================================================
+        ' GENERAL
+        '==================================================================
+
+        Private Const EXPECTED_CUBE As String = "MarketManagement"
+        Private Const EXPECTED_CONS As String = "Aggregated"
+
+        'Turn TRUE during testing.
+        'Turn FALSE after validation to reduce log volume.
+        Private Const ENABLE_DETAIL_LOGGING As Boolean = True
+
+
+        '==================================================================
+        ' ROA SOURCE POV
+        '
+        ' This matches the CubeView POV supplied by the user.
+        '
+        ' Entity / Scenario / Time / Cons are inherited from the
+        ' current Data Unit.
+        '==================================================================
+
+        Private Const SOURCE_VIEW As String = "YTD"
+
+        Private Const SOURCE_FLOW As String = "Total_DataType"
+        Private Const SOURCE_ORIGIN As String = "Top"
+        Private Const SOURCE_IC As String = "None"
+
+        Private Const SOURCE_UD1 As String = "Top"
+        Private Const SOURCE_UD2 As String = "None"
+        Private Const SOURCE_UD3 As String = "None"
+        Private Const SOURCE_UD4 As String = "Top"
+        Private Const SOURCE_UD5 As String = "None"
+        Private Const SOURCE_UD6 As String = "None"
+        Private Const SOURCE_UD7 As String = "None"
+        Private Const SOURCE_UD8 As String = "None"
+
+
+        '==================================================================
+        ' SOURCE ACCOUNTS
+        '==================================================================
+
+        Private Const ACCT_REVENUE_MTM As String = "Revenue_MtM"
+
+        Private Const ACCT_CREDITS_FEES_MTM As String =
+            "Credits and Fees_MtM"
+
+        Private Const ACCT_REVENUE_MM As String =
+            "Revenues_MM"
+
+        Private Const ACCT_AUM As String =
+            "IR_AUM_AMT"
+
+
+        '==================================================================
+        ' ADVISORY ACCOUNTS
+        '==================================================================
+
+        Private Shared ReadOnly ADVISORY_ACCOUNTS As String() = _
+        {
+            "454276",
+            "454278",
+            "454279",
+            "454284",
+            "454285"
+        }
+
+
+        '==================================================================
+        ' STORED ROA ACCOUNTS
+        '
+        ' CHANGE THESE IF YOUR ACTUAL STAT ACCOUNT NAMES ARE DIFFERENT.
+        '==================================================================
+
+        Private Const TARGET_ROA_ACCOUNT As String =
+            "ROA_Stat"
+
+        Private Const TARGET_ROA_MM_ACCOUNT As String =
+            "ROA_MM_Stat"
+
+
+        '==================================================================
+        ' TARGET STORAGE POV
+        '
+        ' Store exactly ONE ROA cell for each Entity / Scenario / Time /
+        ' Cons Data Unit.
+        '
+        ' Entity, Scenario, Time and Cons come from the DM Data Unit.
+        '==================================================================
+
+        Private Const TARGET_VIEW As String = "YTD"
+
+        Private Const TARGET_FLOW As String = "None"
+        Private Const TARGET_ORIGIN As String = "Forms"
+        Private Const TARGET_IC As String = "None"
+
+        Private Const TARGET_UD1 As String = "None"
+        Private Const TARGET_UD2 As String = "None"
+        Private Const TARGET_UD3 As String = "None"
+        Private Const TARGET_UD4 As String = "None"
+        Private Const TARGET_UD5 As String = "None"
+        Private Const TARGET_UD6 As String = "None"
+        Private Const TARGET_UD7 As String = "None"
+        Private Const TARGET_UD8 As String = "None"
+
+
+        '==================================================================
+        ' Durable Storage
+        '
+        ' TRUE means the stored ROA will survive a normal subsequent
+        ' Calculate / Consolidate.
+        '
+        ' The DM process will overwrite it when run again.
+        '==================================================================
+
+        Private Const STORE_AS_DURABLE As Boolean = True
+
+
+        '==================================================================
+        ' BUSINESS DAYS
+        '==================================================================
+
+        Private Const BD_ACCOUNT As String = "990050"
+
+        Private Const BD_CUBE As String =
+            "MarketManagement"
+
+        Private Const BD_ENTITY As String =
+            "No_Region"
+
+        Private Const BD_PARENT As String =
+            "None"
+
+        Private Const BD_CONS As String =
+            "USD"
+
+        Private Const BD_SCENARIO As String =
+            "Assumption"
+
+        Private Const BD_VIEW As String =
+            "Periodic"
+
+        Private Const BD_FLOW As String =
+            "Adjustments"
+
+        Private Const BD_ORIGIN As String =
+            "Forms"
+
+        Private Const BD_IC As String =
+            "None"
+
+        Private Const BD_UD1 As String =
+            "Total No Department"
+
+        Private Const BD_UD2 As String =
+            "None"
+
+        Private Const BD_UD3 As String =
+            "None"
+
+        Private Const BD_UD4 As String =
+            "Top"
+
+        Private Const BD_UD5 As String =
+            "None"
+
+        Private Const BD_UD6 As String =
+            "None"
+
+        Private Const BD_UD7 As String =
+            "None"
+
+        Private Const BD_UD8 As String =
+            "None"
+
+
+        '==================================================================
+        ' NUMERATOR DELEGATE
+        '==================================================================
+
+        Private Delegate Function NumeratorBuilder(
+            ByVal api As FinanceRulesApi,
+            ByVal advisorySum As Decimal) As Decimal
+
+
+
+        '==================================================================
+        ' MAIN
+        '==================================================================
+
+        Public Function Main(
+            ByVal si As SessionInfo,
+            ByVal globals As BRGlobals,
+            ByVal api As FinanceRulesApi,
+            ByVal args As FinanceRulesArgs) As Object
+
+            Try
+
+                Select Case api.FunctionType
+
+
+                    '======================================================
+                    ' EXISTING DYNAMIC CUBEVIEW FUNCTIONS
+                    '======================================================
+
+                    Case FinanceFunctionType.DataCell
+
+                        Dim sFunc As String =
+                            args.DataCellArgs.FunctionName
+
+
+                        If sFunc.XFEqualsIgnoreCase("GetROA") Then
+
+                            Return CalculateROA(
+                                si,
+                                api,
+                                "ROA",
+                                AddressOf BuildNumerator_Standard)
+
+                        End If
+
+
+                        If sFunc.XFEqualsIgnoreCase("GetROA_MM") Then
+
+                            Return CalculateROA(
+                                si,
+                                api,
+                                "ROA_MM",
+                                AddressOf BuildNumerator_MM)
+
+                        End If
+
+
+
+                    '======================================================
+                    ' NEW DATA MANAGEMENT CUSTOM CALCULATE
+                    '======================================================
+
+                    Case FinanceFunctionType.CustomCalculate
+
+                        Dim sFunc As String =
+                            args.CustomCalculateArgs.FunctionName
+
+
+                        '--------------------------------------------------
+                        'Validate the Data Unit coming from DM
+                        '--------------------------------------------------
+
+                        ValidateCustomCalculatePOV(
+                            si,
+                            api)
+
+
+                        '--------------------------------------------------
+                        'Standard ROA
+                        '--------------------------------------------------
+
+                        If sFunc.XFEqualsIgnoreCase("StoreROA") Then
+
+                            StoreROAForCurrentDataUnit(
+                                si,
+                                api,
+                                "ROA",
+                                AddressOf BuildNumerator_Standard,
+                                TARGET_ROA_ACCOUNT)
+
+                            Return Nothing
+
+                        End If
+
+
+                        '--------------------------------------------------
+                        'MM ROA
+                        '--------------------------------------------------
+
+                        If sFunc.XFEqualsIgnoreCase("StoreROA_MM") Then
+
+                            StoreROAForCurrentDataUnit(
+                                si,
+                                api,
+                                "ROA_MM",
+                                AddressOf BuildNumerator_MM,
+                                TARGET_ROA_MM_ACCOUNT)
+
+                            Return Nothing
+
+                        End If
+
+
+                End Select
+
+
+                Return Nothing
+
+
+            Catch ex As Exception
+
+                Throw ErrorHandler.LogWrite(
+                    si,
+                    New XFException(si, ex))
+
+            End Try
+
+        End Function
+
+
+
+        '==================================================================
+        ' VALIDATE CUSTOM CALCULATE DATA UNIT
+        '==================================================================
+
+        Private Sub ValidateCustomCalculatePOV(
+            ByVal si As SessionInfo,
+            ByVal api As FinanceRulesApi)
+
+            If Not api.Pov.Cube.Name.XFEqualsIgnoreCase(
+                EXPECTED_CUBE) Then
+
+                Throw New Exception(
+                    "ROA Store: Expected Cube '" &
+                    EXPECTED_CUBE &
+                    "' but received '" &
+                    api.Pov.Cube.Name &
+                    "'.")
+
+            End If
+
+
+            If Not api.Pov.Cons.Name.XFEqualsIgnoreCase(
+                EXPECTED_CONS) Then
+
+                Throw New Exception(
+                    "ROA Store: Expected Consolidation '" &
+                    EXPECTED_CONS &
+                    "' but received '" &
+                    api.Pov.Cons.Name &
+                    "'.")
+
+            End If
+
+
+            LogMessage(
+                si,
+                "ROA Store Data Unit -> " &
+                "Entity=" & api.Pov.Entity.Name &
+                ", Scenario=" & api.Pov.Scenario.Name &
+                ", Time=" & api.Pov.Time.Name &
+                ", Cons=" & api.Pov.Cons.Name)
+
+        End Sub
+
+
+
+        '==================================================================
+        ' STORE ROA
+        '
+        ' IMPORTANT:
+        '
+        ' There is NO Entity loop here.
+        '
+        ' DM Entity Filter:
+        '
+        '       E#us_divisions.Base
+        '
+        ' causes OneStream to execute this once for every Entity.
+        '==================================================================
+
+        Private Sub StoreROAForCurrentDataUnit(
+            ByVal si As SessionInfo,
+            ByVal api As FinanceRulesApi,
+            ByVal label As String,
+            ByVal getNumerator As NumeratorBuilder,
+            ByVal targetAccount As String)
+
+            Try
+
+                Dim currentEntity As String =
+                    api.Pov.Entity.Name
+
+                Dim currentScenario As String =
+                    api.Pov.Scenario.Name
+
+                Dim currentTime As String =
+                    api.Pov.Time.Name
+
+
+                LogMessage(
+                    si,
+                    label &
+                    " Store START -> Entity=" &
+                    currentEntity &
+                    ", Scenario=" &
+                    currentScenario &
+                    ", Time=" &
+                    currentTime)
+
+
+                '----------------------------------------------------------
+                'Calculate ROA using existing calculation logic
+                '----------------------------------------------------------
+
+                Dim roaCell As DataCell =
+                    CalculateROA(
+                        si,
+                        api,
+                        label,
+                        getNumerator)
+
+
+                '----------------------------------------------------------
+                'Build target stat-account intersection
+                '----------------------------------------------------------
+
+                Dim targetScript As String =
+                    BuildTargetScript(targetAccount)
+
+
+                '----------------------------------------------------------
+                'If calculation produced NoData, clear old stored ROA
+                'including Durable calculated data.
+                '----------------------------------------------------------
+
+                If roaCell Is Nothing OrElse
+                   roaCell.CellStatus.IsNoData Then
+
+                    LogMessage(
+                        si,
+                        label &
+                        " Store -> NoData. Clearing " &
+                        targetScript)
+
+
+                    api.Data.ClearCalculatedData(
+                        targetScript,
+                        True,
+                        True,
+                        True,
+                        True)
+
+
+                    Exit Sub
+
+                End If
+
+
+                Dim roaValue As Decimal =
+                    roaCell.CellAmount
+
+
+                '----------------------------------------------------------
+                'Fully qualified target dimensions mean this formula
+                'writes ONE cell inside the current Data Unit.
+                '
+                'Entity / Scenario / Time / Cons are inherited from the
+                'current DM Data Unit.
+                '----------------------------------------------------------
+
+                Dim formula As String = _
+                    targetScript &
+                    " = " &
+                    roaValue.ToString(
+                        CultureInfo.InvariantCulture)
+
+
+                LogMessage(
+                    si,
+                    label &
+                    " Store -> Entity=" &
+                    currentEntity &
+                    ", Value=" &
+                    roaValue.ToString() &
+                    ", Formula=" &
+                    formula)
+
+
+                '----------------------------------------------------------
+                'Write as Durable calculated data
+                '----------------------------------------------------------
+
+                api.Data.Calculate(
+                    formula,
+                    STORE_AS_DURABLE)
+
+
+                LogMessage(
+                    si,
+                    label &
+                    " Store COMPLETE -> Entity=" &
+                    currentEntity &
+                    ", ROA=" &
+                    roaValue.ToString())
+
+
+            Catch ex As Exception
+
+                Throw ErrorHandler.LogWrite(
+                    si,
+                    New XFException(si, ex))
+
+            End Try
+
+        End Sub
+
+
+
+        '==================================================================
+        ' BUILD TARGET STORAGE SCRIPT
+        '==================================================================
+
+        Private Function BuildTargetScript(
+            ByVal targetAccount As String) As String
+
+            Return _
+                "A#[" & targetAccount & "]" &
+                ":V#[" & TARGET_VIEW & "]" &
+                ":F#[" & TARGET_FLOW & "]" &
+                ":O#[" & TARGET_ORIGIN & "]" &
+                ":I#[" & TARGET_IC & "]" &
+                ":U1#[" & TARGET_UD1 & "]" &
+                ":U2#[" & TARGET_UD2 & "]" &
+                ":U3#[" & TARGET_UD3 & "]" &
+                ":U4#[" & TARGET_UD4 & "]" &
+                ":U5#[" & TARGET_UD5 & "]" &
+                ":U6#[" & TARGET_UD6 & "]" &
+                ":U7#[" & TARGET_UD7 & "]" &
+                ":U8#[" & TARGET_UD8 & "]"
+
+        End Function
+
+
+
+        '==================================================================
+        ' BUILD CURRENT ENTITY / SCENARIO / TIME SOURCE SCRIPT
+        '
+        ' Entity
+        ' Scenario
+        ' Time
+        ' Consolidation
+        '
+        ' are intentionally NOT included.
+        '
+        ' Those dimensions come from the current Data Unit.
+        '==================================================================
+
+        Private Function BuildSourceScript(
+            ByVal accountName As String,
+            ByVal viewName As String) As String
+
+            Return _
+                "A#[" & accountName & "]" &
+                ":V#[" & viewName & "]" &
+                ":F#[" & SOURCE_FLOW & "]" &
+                ":O#[" & SOURCE_ORIGIN & "]" &
+                ":I#[" & SOURCE_IC & "]" &
+                ":U1#[" & SOURCE_UD1 & "]" &
+                ":U2#[" & SOURCE_UD2 & "]" &
+                ":U3#[" & SOURCE_UD3 & "]" &
+                ":U4#[" & SOURCE_UD4 & "]" &
+                ":U5#[" & SOURCE_UD5 & "]" &
+                ":U6#[" & SOURCE_UD6 & "]" &
+                ":U7#[" & SOURCE_UD7 & "]" &
+                ":U8#[" & SOURCE_UD8 & "]"
+
+        End Function
+
+
+
+        '==================================================================
+        ' CALCULATE ROA
+        '==================================================================
+
+        Private Function CalculateROA(
+            ByVal si As SessionInfo,
+            ByVal api As FinanceRulesApi,
+            ByVal label As String,
+            ByVal getNumerator As NumeratorBuilder) As DataCell
+
+            Try
+
+                '----------------------------------------------------------
+                'Current workflow / Data Unit time
+                '----------------------------------------------------------
+
+                Dim povTimeId As Integer =
+                    api.Pov.Time.MemberId
+
+                Dim currentYear As Integer =
+                    api.Time.GetYearFromId(povTimeId)
+
+                Dim currentMonth As Integer =
+                    api.Time.GetPeriodNumFromId(povTimeId)
+
+
+                If currentMonth <= 0 Then
+
+                    LogMessage(
+                        si,
+                        label &
+                        ": Could not derive current month.")
+
+                    Return api.Data.CreateDataCellObject(
+                        0D,
+                        False,
+                        True)
+
+                End If
+
+
+                LogValue(
+                    si,
+                    label,
+                    "Current Month",
+                    currentMonth)
+
+
+                '----------------------------------------------------------
+                'Business Days
+                '----------------------------------------------------------
+
+                Dim bdCtx As BusinessDayContext =
+                    BuildBusinessDayContext(
+                        api,
+                        currentYear,
+                        currentMonth)
+
+
+                LogBusinessDayContext(
+                    si,
+                    label,
+                    bdCtx)
+
+
+                '----------------------------------------------------------
+                'Average Monthly AUM
+                '----------------------------------------------------------
+
+                Dim dblAvgMonthlyAUM As Decimal =
+                    CalculateAvgMonthlyAUM(
+                        api,
+                        currentMonth)
+
+
+                LogValue(
+                    si,
+                    label,
+                    "Average AUM",
+                    dblAvgMonthlyAUM)
+
+
+                If dblAvgMonthlyAUM = 0D Then
+
+                    LogMessage(
+                        si,
+                        label &
+                        ": Average Monthly AUM is zero. Returning NoData.")
+
+
+                    Return api.Data.CreateDataCellObject(
+                        0D,
+                        False,
+                        True)
+
+                End If
+
+
+                '----------------------------------------------------------
+                'Step 1
+                '----------------------------------------------------------
+
+                Dim dblAdvisorySum As Decimal =
+                    SumAdvisoryAccounts(api)
+
+
+                LogValue(
+                    si,
+                    label,
+                    "Advisory Sum",
+                    dblAdvisorySum)
+
+
+                Dim dblNumerator As Decimal =
+                    getNumerator(
+                        api,
+                        dblAdvisorySum)
+
+
+                LogValue(
+                    si,
+                    label,
+                    "Numerator",
+                    dblNumerator)
+
+
+                Dim dblA As Decimal =
+                    CalculateA(
+                        dblNumerator,
+                        dblAvgMonthlyAUM)
+
+
+                LogValue(
+                    si,
+                    label,
+                    "A",
+                    dblA)
+
+
+                '----------------------------------------------------------
+                'Step 2
+                '----------------------------------------------------------
+
+                Dim dblB As Decimal =
+                    CalculateB(
+                        dblA,
+                        bdCtx)
+
+
+                LogValue(
+                    si,
+                    label,
+                    "B",
+                    dblB)
+
+
+                '----------------------------------------------------------
+                'Step 3
+                '----------------------------------------------------------
+
+                Dim dblC As Decimal =
+                    CalculateC(
+                        dblAdvisorySum,
+                        dblAvgMonthlyAUM)
+
+
+                LogValue(
+                    si,
+                    label,
+                    "C",
+                    dblC)
+
+
+                '----------------------------------------------------------
+                'Step 4
+                '----------------------------------------------------------
+
+                Dim dblD As Decimal =
+                    CalculateD(
+                        dblC,
+                        bdCtx)
+
+
+                LogValue(
+                    si,
+                    label,
+                    "D",
+                    dblD)
+
+
+                '----------------------------------------------------------
+                'Step 5
+                '----------------------------------------------------------
+
+                Dim dblROA As Decimal =
+                    dblB + dblD
+
+
+                LogValue(
+                    si,
+                    label,
+                    "Final ROA",
+                    dblROA)
+
+
+                Return api.Data.CreateDataCellObject(
+                    dblROA,
+                    False,
+                    False)
+
+
+            Catch ex As Exception
+
+                Throw ErrorHandler.LogWrite(
+                    si,
+                    New XFException(si, ex))
+
+            End Try
+
+        End Function
+
+
+
+        '==================================================================
+        ' NUMERATOR - STANDARD
+        '==================================================================
+
+        Private Function BuildNumerator_Standard(
+            ByVal api As FinanceRulesApi,
+            ByVal advisorySum As Decimal) As Decimal
+
+
+            Dim dblRevenueMtM As Decimal =
+                GetCellAmount(
+                    api,
+                    BuildSourceScript(
+                        ACCT_REVENUE_MTM,
+                        SOURCE_VIEW))
+
+
+            Dim dblCreditsFeesMtM As Decimal =
+                GetCellAmount(
+                    api,
+                    BuildSourceScript(
+                        ACCT_CREDITS_FEES_MTM,
+                        SOURCE_VIEW))
+
+
+            Return _
+                dblRevenueMtM +
+                Math.Abs(dblCreditsFeesMtM) -
+                advisorySum
+
+        End Function
+
+
+
+        '==================================================================
+        ' NUMERATOR - MM
+        '==================================================================
+
+        Private Function BuildNumerator_MM(
+            ByVal api As FinanceRulesApi,
+            ByVal advisorySum As Decimal) As Decimal
+
+
+            Dim dblRevenueMM As Decimal =
+                GetCellAmount(
+                    api,
+                    BuildSourceScript(
+                        ACCT_REVENUE_MM,
+                        SOURCE_VIEW))
+
+
+            Return _
+                dblRevenueMM -
+                advisorySum
+
+        End Function
+
+
+
+        '==================================================================
+        ' AVG MONTHLY AUM
+        '==================================================================
+
+        Private Function CalculateAvgMonthlyAUM(
+            ByVal api As FinanceRulesApi,
+            ByVal currentMonth As Integer) As Decimal
+
+
+            Dim dblYTDAUM As Decimal =
+                GetCellAmount(
+                    api,
+                    BuildSourceScript(
+                        ACCT_AUM,
+                        SOURCE_VIEW))
+
+
+            Return _
+                SafeDivide(
+                    dblYTDAUM,
+                    currentMonth)
+
+        End Function
+
+
+
+        '==================================================================
+        ' A
+        '==================================================================
+
+        Private Function CalculateA(
+            ByVal numerator As Decimal,
+            ByVal avgMonthlyAUM As Decimal) As Decimal
+
+            Return _
+                SafeDivide(
+                    numerator,
+                    avgMonthlyAUM)
+
+        End Function
+
+
+
+        '==================================================================
+        ' B
+        '==================================================================
+
+        Private Function CalculateB(
+            ByVal a As Decimal,
+            ByVal bdCtx As BusinessDayContext) As Decimal
+
+
+            Dim dblRatio As Decimal =
+                SafeDivide(
+                    bdCtx.YTDBusinessDays,
+                    bdCtx.TotalAnnualBD)
+
+
+            Return _
+                SafeDivide(
+                    a,
+                    dblRatio)
+
+        End Function
+
+
+
+        '==================================================================
+        ' C
+        '==================================================================
+
+        Private Function CalculateC(
+            ByVal advisorySum As Decimal,
+            ByVal avgMonthlyAUM As Decimal) As Decimal
+
+
+            Return _
+                SafeDivide(
+                    advisorySum,
+                    avgMonthlyAUM)
+
+        End Function
+
+
+
+        '==================================================================
+        ' D
+        '==================================================================
+
+        Private Function CalculateD(
+            ByVal c As Decimal,
+            ByVal bdCtx As BusinessDayContext) As Decimal
+
+
+            Dim dblNum As Decimal = _
+                bdCtx.YTDBusinessDays -
+                bdCtx.MTDBusinessDays +
+                bdCtx.M12PrevYearBD
+
+
+            Dim dblDenom As Decimal = _
+                bdCtx.M11YTDBusinessDays +
+                bdCtx.M12PrevYearBD
+
+
+            Dim dblRatio As Decimal =
+                SafeDivide(
+                    dblNum,
+                    dblDenom)
+
+
+            Return _
+                SafeDivide(
+                    c,
+                    dblRatio)
+
+        End Function
+
+
+
+        '==================================================================
+        ' BUSINESS DAY CONTEXT
+        '==================================================================
+
+        Private Class BusinessDayContext
+
+            Public Property TotalAnnualBD As Decimal
+
+            Public Property YTDBusinessDays As Decimal
+
+            Public Property MTDBusinessDays As Decimal
+
+            Public Property M11YTDBusinessDays As Decimal
+
+            Public Property M12PrevYearBD As Decimal
+
+        End Class
+
+
+
+        '==================================================================
+        ' BUILD BUSINESS DAY CONTEXT
+        '==================================================================
+
+        Private Function BuildBusinessDayContext(
+            ByVal api As FinanceRulesApi,
+            ByVal currentYear As Integer,
+            ByVal currentMonth As Integer) As BusinessDayContext
+
+
+            Dim ctx As New BusinessDayContext()
+
+
+            Dim monthlyBD(11) As Decimal
+
+
+            For m As Integer = 1 To 12
+
+                monthlyBD(m - 1) =
+                    GetBusinessDaysForMonth(
+                        api,
+                        currentYear,
+                        m)
+
+            Next
+
+
+            '--------------------------------------------------------------
+            'Total annual BD
+            '--------------------------------------------------------------
+
+            For i As Integer = 0 To 11
+
+                ctx.TotalAnnualBD +=
+                    monthlyBD(i)
+
+            Next
+
+
+            '--------------------------------------------------------------
+            'YTD BD
+            '--------------------------------------------------------------
+
+            For i As Integer = 0 To currentMonth - 1
+
+                ctx.YTDBusinessDays +=
+                    monthlyBD(i)
+
+            Next
+
+
+            '--------------------------------------------------------------
+            'MTD BD
+            '--------------------------------------------------------------
+
+            ctx.MTDBusinessDays =
+                monthlyBD(currentMonth - 1)
+
+
+            '--------------------------------------------------------------
+            'M1-M11 YTD
+            '--------------------------------------------------------------
+
+            For i As Integer = 0 To 10
+
+                ctx.M11YTDBusinessDays +=
+                    monthlyBD(i)
+
+            Next
+
+
+            '--------------------------------------------------------------
+            'Previous Year M12
+            '--------------------------------------------------------------
+
+            ctx.M12PrevYearBD =
+                GetBusinessDaysForMonth(
+                    api,
+                    currentYear - 1,
+                    12)
+
+
+            Return ctx
+
+        End Function
+
+
+
+        '==================================================================
+        ' BUSINESS DAYS
+        '
+        ' IMPORTANT:
+        '
+        ' Cube token is Cb#
+        ' Consolidation token is C#
+        '==================================================================
+
+        Private Function GetBusinessDaysForMonth(
+            ByVal api As FinanceRulesApi,
+            ByVal year As Integer,
+            ByVal month As Integer) As Decimal
+
+
+            Dim sTime As String = _
+                year.ToString() &
+                "M" &
+                month.ToString()
+
+
+            Dim sScript As String = _
+                "Cb#[" & BD_CUBE & "]" &
+                ":E#[" & BD_ENTITY & "]" &
+                ":P#[" & BD_PARENT & "]" &
+                ":C#[" & BD_CONS & "]" &
+                ":S#[" & BD_SCENARIO & "]" &
+                ":T#[" & sTime & "]" &
+                ":V#[" & BD_VIEW & "]" &
+                ":A#[" & BD_ACCOUNT & "]" &
+                ":F#[" & BD_FLOW & "]" &
+                ":O#[" & BD_ORIGIN & "]" &
+                ":I#[" & BD_IC & "]" &
+                ":U1#[" & BD_UD1 & "]" &
+                ":U2#[" & BD_UD2 & "]" &
+                ":U3#[" & BD_UD3 & "]" &
+                ":U4#[" & BD_UD4 & "]" &
+                ":U5#[" & BD_UD5 & "]" &
+                ":U6#[" & BD_UD6 & "]" &
+                ":U7#[" & BD_UD7 & "]" &
+                ":U8#[" & BD_UD8 & "]"
+
+
+            Return _
+                GetCellAmount(
+                    api,
+                    sScript)
+
+        End Function
+
+
+
+        '==================================================================
+        ' ADVISORY ACCOUNTS
+        '==================================================================
+
+        Private Function SumAdvisoryAccounts(
+            ByVal api As FinanceRulesApi) As Decimal
+
+
+            Dim total As Decimal = 0D
+
+
+            For Each sAcct As String In ADVISORY_ACCOUNTS
+
+                total +=
+                    GetCellAmount(
+                        api,
+                        BuildSourceScript(
+                            sAcct,
+                            SOURCE_VIEW))
+
+            Next
+
+
+            Return total
+
+        End Function
+
+
+
+        '==================================================================
+        ' SAFE DIVIDE
+        '==================================================================
+
+        Private Function SafeDivide(
+            ByVal numerator As Decimal,
+            ByVal denominator As Decimal) As Decimal
+
+
+            If denominator = 0D Then
+                Return 0D
+            End If
+
+
+            Return _
+                numerator /
+                denominator
+
+        End Function
+
+
+
+        '==================================================================
+        ' GET DATA CELL
+        '
+        ' IMPORTANT:
+        '
+        ' Unlike the old code, exceptions are NOT swallowed.
+        '
+        ' If a Member Script is invalid, the DM process should fail rather
+        ' than silently writing an incorrect zero ROA.
+        '==================================================================
+
+        Private Function GetCellAmount(
+            ByVal api As FinanceRulesApi,
+            ByVal memberScript As String) As Decimal
+
+
+            Dim oCell As DataCell =
+                api.Data.GetDataCell(
+                    memberScript)
+
+
+            If oCell Is Nothing Then
+                Return 0D
+            End If
+
+
+            If oCell.CellStatus.IsNoData Then
+                Return 0D
+            End If
+
+
+            Return _
+                oCell.CellAmount
+
+        End Function
+
+
+
+        '==================================================================
+        ' LOGGING
+        '==================================================================
+
+        Private Sub LogMessage(
+            ByVal si As SessionInfo,
+            ByVal message As String)
+
+
+            If ENABLE_DETAIL_LOGGING Then
+
+                BRApi.ErrorLog.LogMessage(
+                    si,
+                    message)
+
+            End If
+
+        End Sub
+
+
+
+        Private Sub LogValue(
+            ByVal si As SessionInfo,
+            ByVal label As String,
+            ByVal name As String,
+            ByVal value As Decimal)
+
+
+            If ENABLE_DETAIL_LOGGING Then
+
+                BRApi.ErrorLog.LogMessage(
+                    si,
+                    label &
+                    " - " &
+                    name &
+                    ": " &
+                    value.ToString())
+
+            End If
+
+        End Sub
+
+
+
+        Private Sub LogValue(
+            ByVal si As SessionInfo,
+            ByVal label As String,
+            ByVal name As String,
+            ByVal value As Integer)
+
+
+            If ENABLE_DETAIL_LOGGING Then
+
+                BRApi.ErrorLog.LogMessage(
+                    si,
+                    label &
+                    " - " &
+                    name &
+                    ": " &
+                    value.ToString())
+
+            End If
+
+        End Sub
+
+
+
+        Private Sub LogBusinessDayContext(
+            ByVal si As SessionInfo,
+            ByVal label As String,
+            ByVal ctx As BusinessDayContext)
+
+
+            LogValue(
+                si,
+                label,
+                "Annual BD",
+                ctx.TotalAnnualBD)
+
+
+            LogValue(
+                si,
+                label,
+                "YTD BD",
+                ctx.YTDBusinessDays)
+
+
+            LogValue(
+                si,
+                label,
+                "MTD BD",
+                ctx.MTDBusinessDays)
+
+
+            LogValue(
+                si,
+                label,
+                "M11 YTD BD",
+                ctx.M11YTDBusinessDays)
+
+
+            LogValue(
+                si,
+                label,
+                "Previous Year M12 BD",
+                ctx.M12PrevYearBD)
+
+        End Sub
+
+
+    End Class
+
+End Namespace
