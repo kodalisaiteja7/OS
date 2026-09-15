@@ -1,3 +1,16 @@
+Dim verifyCell As DataCell =
+    api.Data.GetDataCell(targetScript)
+
+BRApi.ErrorLog.LogMessage(
+    si,
+    "ROA VERIFY" &
+    " | Entity=" & api.Pov.Entity.Name &
+    " | Cons=" & api.Pov.Cons.Name &
+    " | Account=" & targetAccount &
+    " | Amount=" & verifyCell.CellAmount.ToString() &
+    " | NoData=" & verifyCell.CellStatus.IsNoData.ToString()
+)
+
 Imports System
 Imports System.Globalization
 Imports OneStream.Shared.Common
