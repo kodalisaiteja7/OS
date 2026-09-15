@@ -1,334 +1,40 @@
-/* ============================================================
-   FPA P&L EXTRACT - DASHBOARD PREVIEW
-
-   Parameters:
-       prm_FPA_Time
-       prm_FPA_Market
-       prm_FPA_View
-
-   prm_FPA_View values:
-       YTD
-       MONTHLY
-
-   Preview:
-       Maximum 5,000 rows
-   ============================================================ */
-
-
-/* ============================================================
-   PARAMETERS
-   ============================================================ */
-
-DECLARE @SelectedTime VARCHAR(20);
-DECLARE @RegionList VARCHAR(MAX);
-DECLARE @SelectedView VARCHAR(20);
-
-DECLARE @SelectedYear INT;
-DECLARE @SelectedPeriod INT;
-DECLARE @SelectedYearText VARCHAR(4);
-
-
-SET @SelectedTime = '|!prm_FPA_Time!|';
-SET @RegionList = '|!prm_FPA_Market!|';
-SET @SelectedView = '|!prm_FPA_View!|';
-
-
-/* Clean parameter values */
-
-SET @SelectedTime =
-    UPPER(LTRIM(RTRIM(@SelectedTime)));
-
-SET @SelectedTime =
-    REPLACE(@SelectedTime, 'T#', '');
-
-SET @SelectedView =
-    UPPER(LTRIM(RTRIM(@SelectedView)));
-
-
-/* ============================================================
-   PARSE TIME
-
-   Example:
-       2026M7
-
-   Results:
-       Year   = 2026
-       Period = 7
-   ============================================================ */
-
-SET @SelectedYear =
-    TRY_CONVERT(
-        INT,
-        LEFT(
-            @SelectedTime,
-            CHARINDEX('M', @SelectedTime) - 1
-        )
-    );
-
-
-SET @SelectedPeriod =
-    TRY_CONVERT(
-        INT,
-        SUBSTRING(
-            @SelectedTime,
-            CHARINDEX('M', @SelectedTime) + 1,
-            2
-        )
-    );
-
-
-SET @SelectedYearText =
-    CONVERT(
-        VARCHAR(4),
-        @SelectedYear
-    );
-
-
-
-;WITH
-
-
-/* ============================================================
-   1. SELECTED MARKET REGIONS
-
-   prm_FPA_Market example:
-
-   73;221;27;348;230;72;163;306;379;378;14;380
-   ============================================================ */
-
-SelectedRegions AS
-(
-    SELECT DISTINCT
-
-        LTRIM(RTRIM(value)) AS Region
-
-    FROM STRING_SPLIT(
-        @RegionList,
-        ';'
-    )
-
-    WHERE
-        NULLIF(
-            LTRIM(RTRIM(value)),
-            ''
-        ) IS NOT NULL
-),
-
-
-
-/* ============================================================
-   2. FILTER JLD FIRST
-
-   YTD:
-       2026M7 -> Periods 1 through 7
-
-   MONTHLY:
-       2026M7 -> Period 7 only
-   ============================================================ */
-
-FilteredJLD AS
+WITH LatestFA AS
 (
     SELECT
-
-        jld.Fiscal_Year,
-        jld.Accounting_Period,
-        jld.Business_Unit,
-        jld.Journal_ID,
-        jld.Posted_Date,
-        jld.Account,
-        jld.Chartfield1,
-        jld.Chartfield3,
-        jld.Operating_Unit,
-        jld.Monetary_Amount,
-
-
-        /* Normalize Operating Unit */
-
-        CASE
-
-            WHEN TRY_CONVERT(
-                    BIGINT,
-                    NULLIF(
-                        LTRIM(RTRIM(jld.Operating_Unit)),
-                        ''
-                    )
-                 ) IS NOT NULL
-
-            THEN CONVERT(
-                    VARCHAR(30),
-                    TRY_CONVERT(
-                        BIGINT,
-                        NULLIF(
-                            LTRIM(RTRIM(jld.Operating_Unit)),
-                            ''
-                        )
-                    )
-                 )
-
-            ELSE
-
-                UPPER(
-                    LTRIM(
-                        RTRIM(jld.Operating_Unit)
-                    )
-                )
-
-        END AS OperatingUnit_Key
-
-
-    FROM XFC_FPA_JLD jld
-
-
-    WHERE
-
-        jld.Fiscal_Year = @SelectedYearText
-
-
-        AND
-        (
-            /* ============================
-               YTD
-               ============================ */
-
-            (
-                @SelectedView = 'YTD'
-
-                AND TRY_CONVERT(
-                        INT,
-                        jld.Accounting_Period
-                    )
-                    BETWEEN 1 AND @SelectedPeriod
-            )
-
-
-            OR
-
-
-            /* ============================
-               MONTHLY
-               ============================ */
-
-            (
-                @SelectedView IN ('MONTHLY', 'MONTH')
-
-                AND TRY_CONVERT(
-                        INT,
-                        jld.Accounting_Period
-                    )
-                    = @SelectedPeriod
-            )
-        )
-),
-
-
-
-/* ============================================================
-   3. ONLY FA NUMBERS PRESENT IN CURRENT DATA
-   ============================================================ */
-
-RelevantFA AS
-(
-    SELECT DISTINCT
-
-        jld.Chartfield1 AS FA_NO
-
-    FROM FilteredJLD jld
-
-    WHERE
-
-        NULLIF(
-            LTRIM(RTRIM(jld.Chartfield1)),
-            ''
-        ) IS NOT NULL
-),
-
-
-
-/* ============================================================
-   4. LATEST FA MAPPING
-
-   This preserves your updated SQL behavior:
-
-       Selected Year 2026
-            ->
-       FA mappings through 202612
-
-   ============================================================ */
-
-LatestFARanked AS
-(
-    SELECT
-
-        fm.FA_NO,
-        fm.RGN_CD,
-        fm.EmplID,
-
+        FA_NO,
+        RGN_CD,
+        EmplID,
 
         ROW_NUMBER() OVER
         (
-            PARTITION BY fm.FA_NO
-
-            ORDER BY
-                fm.[YEAR] DESC,
-                fm.[MONTH] DESC
-
+            PARTITION BY FA_NO
+            ORDER BY [YEAR] DESC, [MONTH] DESC
         ) AS rn
 
-
-    FROM XFC_FA_Map fm
-
-
-    INNER JOIN RelevantFA rfa
-
-        ON rfa.FA_NO = fm.FA_NO
-
+    FROM XFC_FA_Map
 
     WHERE
-
-        (
-            fm.[YEAR] * 100
-            +
-            fm.[MONTH]
-        )
-
+        ([YEAR] * 100 + [MONTH])
         <=
-
         (
-            @SelectedYear * 100
-            +
-            12
+            TRY_CONVERT(
+                INT,
+                LEFT(
+                    REPLACE('|!prm_FPA_Time!|', 'T#', ''),
+                    4
+                )
+            ) * 100
+            + 12
         )
 ),
 
 
-
-LatestFA AS
+LatestBranch AS
 (
     SELECT
-
-        FA_NO,
-        RGN_CD,
-        EmplID
-
-    FROM LatestFARanked
-
-    WHERE rn = 1
-),
-
-
-
-/* ============================================================
-   5. NORMALIZE BRANCH LOCATION MAPPING
-   ============================================================ */
-
-LatestBranchRanked AS
-(
-    SELECT
-
         [Year],
         Branch,
         Region,
-
 
         CASE
 
@@ -342,6 +48,7 @@ LatestBranchRanked AS
 
             THEN CONVERT(
                     VARCHAR(30),
+
                     TRY_CONVERT(
                         BIGINT,
                         NULLIF(
@@ -351,13 +58,11 @@ LatestBranchRanked AS
                     )
                  )
 
-            ELSE
-
-                UPPER(
+            ELSE UPPER(
                     LTRIM(
                         RTRIM(Branch)
                     )
-                )
+                 )
 
         END AS Branch_Key,
 
@@ -380,6 +85,7 @@ LatestBranchRanked AS
 
                     THEN CONVERT(
                             VARCHAR(30),
+
                             TRY_CONVERT(
                                 BIGINT,
                                 NULLIF(
@@ -389,16 +95,13 @@ LatestBranchRanked AS
                             )
                          )
 
-                    ELSE
-
-                        UPPER(
+                    ELSE UPPER(
                             LTRIM(
                                 RTRIM(Branch)
                             )
-                        )
+                         )
 
                 END
-
 
             ORDER BY
 
@@ -424,43 +127,19 @@ LatestBranchRanked AS
 
 
     WHERE
-
         NULLIF(
             LTRIM(RTRIM(Branch)),
             ''
         ) IS NOT NULL
-),
-
-
-
-LatestBranch AS
-(
-    SELECT
-
-        [Year],
-        Branch,
-        Region,
-        Branch_Key
-
-    FROM LatestBranchRanked
-
-    WHERE rn = 1
 )
 
 
-
-/* ============================================================
-   6. FINAL PREVIEW
-   ============================================================ */
-
 SELECT TOP 5000
-
 
     CASE
 
         WHEN fmap.FA_NO IS NOT NULL
             THEN 'FA_PL'
-
 
         WHEN fmap.FA_NO IS NULL
 
@@ -471,11 +150,9 @@ SELECT TOP 5000
 
             THEN 'BR_PL'
 
-
         ELSE 'NO_MARKET'
 
     END AS PL_Type,
-
 
 
     jld.Fiscal_Year,
@@ -489,9 +166,8 @@ SELECT TOP 5000
     jld.Operating_Unit,
 
 
-
-    COALESCE(
-
+    COALESCE
+    (
         NULLIF(
             LTRIM(RTRIM(fmap.RGN_CD)),
             ''
@@ -505,53 +181,235 @@ SELECT TOP 5000
     ) AS RGN_CD,
 
 
-
     COALESCE(
         fmap.EmplID,
         ''
     ) AS EmplID,
 
 
-
     jld.Monetary_Amount
 
 
-
-FROM FilteredJLD jld
-
+FROM XFC_FPA_JLD jld
 
 
-LEFT JOIN LatestFA fmap
+LEFT JOIN
+(
+    SELECT
+        FA_NO,
+        RGN_CD,
+        EmplID
 
-    ON fmap.FA_NO =
-       jld.Chartfield1
+    FROM LatestFA
+
+    WHERE rn = 1
+
+) fmap
+
+    ON fmap.FA_NO = jld.Chartfield1
 
 
+LEFT JOIN
+(
+    SELECT
+        [Year],
+        Branch,
+        Region,
+        Branch_Key
 
-LEFT JOIN LatestBranch bmap
+    FROM LatestBranch
 
-    ON bmap.[Year] =
-       jld.Fiscal_Year
+    WHERE rn = 1
+
+) bmap
+
+    ON bmap.[Year] = jld.Fiscal_Year
+
 
     AND bmap.Branch_Key =
-        jld.OperatingUnit_Key
+
+        CASE
+
+            WHEN TRY_CONVERT(
+                    BIGINT,
+                    NULLIF(
+                        LTRIM(RTRIM(jld.Operating_Unit)),
+                        ''
+                    )
+                 ) IS NOT NULL
+
+            THEN CONVERT(
+                    VARCHAR(30),
+
+                    TRY_CONVERT(
+                        BIGINT,
+                        NULLIF(
+                            LTRIM(RTRIM(jld.Operating_Unit)),
+                            ''
+                        )
+                    )
+                 )
+
+            ELSE UPPER(
+                    LTRIM(
+                        RTRIM(jld.Operating_Unit)
+                    )
+                 )
+
+        END
+
+
+WHERE
+
+    /* ========================================================
+       TIME - YEAR
+
+       2026M7 -> 2026
+       ======================================================== */
+
+    jld.Fiscal_Year =
+
+        LEFT(
+            REPLACE(
+                '|!prm_FPA_Time!|',
+                'T#',
+                ''
+            ),
+            4
+        )
 
 
 
-INNER JOIN SelectedRegions sr
+    /* ========================================================
+       VIEW
 
-    ON sr.Region =
+       YTD:
+           2026M7 -> Periods 1 through 7
 
-       COALESCE(
+       MONTHLY:
+           2026M7 -> Period 7 only
+       ======================================================== */
 
-           NULLIF(
-               LTRIM(RTRIM(fmap.RGN_CD)),
-               ''
-           ),
+    AND
+    (
+        (
+            UPPER(
+                LTRIM(
+                    RTRIM('|!prm_FPA_View!|')
+                )
+            ) = 'YTD'
 
-           NULLIF(
-               LTRIM(RTRIM(bmap.Region)),
-               ''
-           )
+            AND TRY_CONVERT(
+                    INT,
+                    jld.Accounting_Period
+                )
+                BETWEEN 1 AND
 
-       );
+                TRY_CONVERT(
+                    INT,
+
+                    SUBSTRING(
+                        REPLACE(
+                            '|!prm_FPA_Time!|',
+                            'T#',
+                            ''
+                        ),
+
+                        CHARINDEX(
+                            'M',
+                            REPLACE(
+                                '|!prm_FPA_Time!|',
+                                'T#',
+                                ''
+                            )
+                        ) + 1,
+
+                        2
+                    )
+                )
+        )
+
+
+        OR
+
+
+        (
+            UPPER(
+                LTRIM(
+                    RTRIM('|!prm_FPA_View!|')
+                )
+            ) IN ('MONTHLY', 'MONTH')
+
+            AND TRY_CONVERT(
+                    INT,
+                    jld.Accounting_Period
+                )
+                =
+
+                TRY_CONVERT(
+                    INT,
+
+                    SUBSTRING(
+                        REPLACE(
+                            '|!prm_FPA_Time!|',
+                            'T#',
+                            ''
+                        ),
+
+                        CHARINDEX(
+                            'M',
+                            REPLACE(
+                                '|!prm_FPA_Time!|',
+                                'T#',
+                                ''
+                            )
+                        ) + 1,
+
+                        2
+                    )
+                )
+        )
+    )
+
+
+
+    /* ========================================================
+       MARKET
+
+       prm_FPA_Market example:
+
+       73;221;27;348;230;72;163;306;379;378;14;380
+
+       Instead of STRING_SPLIT, check exact membership using
+       semicolon delimiters.
+
+       Example:
+           ;73;221;27;
+       ======================================================== */
+
+    AND CHARINDEX
+    (
+        ';'
+        +
+        COALESCE
+        (
+            NULLIF(
+                LTRIM(RTRIM(fmap.RGN_CD)),
+                ''
+            ),
+
+            NULLIF(
+                LTRIM(RTRIM(bmap.Region)),
+                ''
+            )
+        )
+        +
+        ';',
+
+        ';'
+        +
+        '|!prm_FPA_Market!|'
+        +
+        ';'
+
+    ) > 0;
