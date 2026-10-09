@@ -1,12 +1,12 @@
-Description
-Research the existing Canada integration process in OneStream and identify the changes required to support the new Canada acquisition.
-Review how data can be loaded for the new entity and associated GL accounts using the current integration framework.
-Identify any required updates to entity/account mappings, transformation rules, workflow, or existing business rules.
-Document any dependencies, gaps, or additional information needed from the business before development can begin.
-Provide the recommended technical approach for implementing the new entity and GL account integration.
-
-Acceptance Criteria
-
-Existing Canada integration is reviewed and all required changes for the new entity and GL accounts are identified.
-Required configuration, mapping, and development updates are documented along with any dependencies or open questions.
-A recommended implementation approach is provided and reviewed with the BSA/team.
+Ticket 1 — Review Morgan’s Mapping and Confirm the Technical Impact
+Purpose: Finalize exactly what needs to change before development starts.
+Compare Morgan’s workbook with the existing hierarchy and identify the relationships to add, move, retain, or exclude. Resolve the open questions around allocation-driver dependencies, Market Direct Expenses versus Flow treatment, and whether any reporting components need changes.
+Completion criteria: A confirmed change list, resolved mapping questions, and an inventory of affected hierarchy and reporting components.
+Ticket 2 — Implement the Alternate Account Hierarchy
+Purpose: Complete the approved metadata changes.
+Apply the revised parent–child relationships, position revenue and expense allocation accounts under the appropriate reporting categories, and exclude the relationships identified as unnecessary. Preserve existing base accounts, stored data, and relationships required by other reporting or allocation processes.
+Completion criteria: The hierarchy matches the approved mapping in the test environment, and developer testing confirms correct rollups without unintended double counting.
+Ticket 3 — Update Affected Reporting and Complete Business Validation
+Purpose: Make the revised hierarchy usable in the affected reports and validate the end result.
+Update only the Cube Views, account selections, or reporting references identified as needing changes in Ticket 1. Reconcile the revised outputs against expected balances, verify allocation placement and subtotals, and obtain Morgan’s business sign-off.
+Completion criteria: Affected reports use the intended structure, reconciliation differences are explained or resolved, and business approval is documented.
