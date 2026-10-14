@@ -1,12 +1,65 @@
-Ticket 1 — Review Morgan’s Mapping and Confirm the Technical Impact
-Purpose: Finalize exactly what needs to change before development starts.
-Compare Morgan’s workbook with the existing hierarchy and identify the relationships to add, move, retain, or exclude. Resolve the open questions around allocation-driver dependencies, Market Direct Expenses versus Flow treatment, and whether any reporting components need changes.
-Completion criteria: A confirmed change list, resolved mapping questions, and an inventory of affected hierarchy and reporting components.
-Ticket 2 — Implement the Alternate Account Hierarchy
-Purpose: Complete the approved metadata changes.
-Apply the revised parent–child relationships, position revenue and expense allocation accounts under the appropriate reporting categories, and exclude the relationships identified as unnecessary. Preserve existing base accounts, stored data, and relationships required by other reporting or allocation processes.
-Completion criteria: The hierarchy matches the approved mapping in the test environment, and developer testing confirms correct rollups without unintended double counting.
-Ticket 3 — Update Affected Reporting and Complete Business Validation
-Purpose: Make the revised hierarchy usable in the affected reports and validate the end result.
-Update only the Cube Views, account selections, or reporting references identified as needing changes in Ticket 1. Reconcile the revised outputs against expected balances, verify allocation placement and subtotals, and obtain Morgan’s business sign-off.
-Completion criteria: Affected reports use the intended structure, reconciliation differences are explained or resolved, and business approval is documented.
+ira Title
+
+Canada Acquisition – OneStream Integration Enhancement and Timeline Dependencies
+
+Description
+
+Initial research and impact analysis for integrating the new Canada acquisition entity and additional GL accounts into OneStream have been completed.
+
+The team is currently awaiting final requirements and information from the Canada business team before proceeding with the enhancement.
+
+Based on the discussion, the acquisition data is tentatively expected to become available in PeopleSoft around the end of December 2026. As a result, the OneStream enhancement start date will remain on hold until the upstream timeline and required information are confirmed.
+
+Once the Canada team provides the final details and confirms PeopleSoft readiness, the development team will proceed with the necessary OneStream integration and configuration changes.
+
+Timeline and Dependencies
+
+Activity
+
+Timeline / Status
+
+Initial research and impact analysis
+
+Completed
+
+Final requirements from Canada team
+
+Pending
+
+Acquisition data availability in PeopleSoft
+
+Tentatively end of December 2026
+
+OneStream enhancement start
+
+On hold – dependent on upstream readiness and final requirements
+
+Development and unit testing
+
+TBD
+
+UAT and production deployment
+
+TBD
+
+Acceptance Criteria
+
+Final entity, GL account, and integration requirements are received and confirmed by the Canada team.
+
+PeopleSoft data availability and the upstream integration timeline are confirmed before scheduling the OneStream enhancement.
+
+Required OneStream changes are implemented and tested once dependencies are resolved.
+
+Financial data for the acquired entity is validated and reconciled with the source data.
+
+Current Status
+
+On Hold – Awaiting Canada Team / PeopleSoft Dependencies
+
+Next Steps
+
+Follow up with the Canada team for final requirements and the confirmed PeopleSoft integration timeline.
+
+Reassess the OneStream enhancement start date once upstream dependencies are resolved.
+
+Finalize development, testing, and deployment dates after the required information is available.
